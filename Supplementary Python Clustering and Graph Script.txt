@@ -1,0 +1,4286 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Dec  2 14:34:44 2020
+
+@author: ollie
+"""
+
+##########################################################################################
+#   Import packages
+##########################################################################################
+
+import pandas as pd
+import os as os
+import networkx as nx
+from Bio import SeqIO
+import community as community_louvain
+import matplotlib.pyplot as plt
+import math
+import numpy as np
+import seaborn as sns; sns.set(style="white")
+from scipy.spatial import ConvexHull
+from matplotlib.patches import Polygon
+from copy import copy
+import itertools
+import time
+import json
+import csv
+
+##########################################################################################
+#   Keyword Hits
+##########################################################################################
+
+# Read in the compiled annotation dataset
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data")
+merged=pd.read_csv('Merged data none missing.csv',header="infer")
+
+# Change column names
+merged.columns.values[0] = "delete"
+merged.columns.values[1] = "Target"
+
+# Delete unnecesary columns
+del merged['delete']
+
+# create a column with all dbcan hits
+merged['All dbcan'] = merged[merged.columns[14:17]].apply(lambda x: '+'.join(x.dropna().astype(str)),axis=1)
+
+# Subset only the descriptions of the dataset
+mergeddescriptions = merged[['Target','pdb Description','Nr Description',' Pfam Description','Swiss Description','All dbcan']]
+mergeddescriptions.columns=['Target','pdb','nr','pfam','swiss','dbcan']
+
+#load in the keyword list
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/allvsall")
+keywordnew = pd.read_csv('new keyword list.csv', header=None,encoding='windows-1254')
+keywordnew.columns=['keyword']
+
+# make a list of the keywords
+keywordnew_list = keywordnew['keyword'].tolist()
+keywordnew_list= list(set(keywordnew_list))
+
+# make list lowrcase for search
+keywordlist_lower= [element.lower() for element in keywordnew_list]
+
+# change directory 
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data")
+
+# ditionary of all of the information for each of the proteins
+alldescriptions=dict(mergeddescriptions.set_index('Target').groupby(level = 0).apply(lambda x : x.to_dict(orient= 'records')))
+
+# Identify hits from each of the datasets
+dbcanhits={}
+nrhits={}
+pfamhits={}
+swisshits={}
+pdbhits={}
+
+for k, v in alldescriptions.items():
+    for i in range(0,len(v)):
+        for x in keywordlist_lower:
+            dbcanvalue=v[i]['dbcan']
+            dbcanvalue=str(dbcanvalue)
+            if x in dbcanvalue.lower():
+                dbcanhits[k]=x
+        
+for k, v in alldescriptions.items():
+    for i in range(0,len(v)):
+        for x in keywordlist_lower:
+            pdbvalue=v[i]['pdb']
+            pdbvalue=str(pdbvalue)
+            if x in pdbvalue.lower():
+                pdbhits[k]=x
+
+for k, v in alldescriptions.items():
+    for i in range(0,len(v)):
+        for x in keywordlist_lower:
+            nrvalue=v[i]['nr']
+            nrvalue=str(nrvalue)
+            if x in nrvalue.lower():
+                nrhits[k]=x
+
+for k, v in alldescriptions.items():
+    for i in range(0,len(v)):
+        for x in keywordlist_lower:
+            swissvalue=v[i]['swiss']
+            swissvalue=str(swissvalue)
+            if x in swissvalue.lower():
+                swisshits[k]=x
+                
+for k, v in alldescriptions.items():
+    for x in keywordlist_lower:
+        for i in range(0,len(v)):
+            pfamvalue=v[i]['pfam']
+            pfamvalue=str(pfamvalue)
+            if x in pfamvalue.lower():
+                pfamhits[k]=x
+
+# create dataframes from the dictionaries
+dbcanhitspd= pd.DataFrame.from_dict(dbcanhits,orient='index')
+dbcanhitspd['Protein']=dbcanhitspd.index
+dbcanhitspd.columns=['hit dbcan','Protein']
+
+swisshitspd= pd.DataFrame.from_dict(swisshits,orient='index')
+swisshitspd['Protein']=swisshitspd.index
+swisshitspd.columns=['hit swiss','Protein']
+
+pdbhitspd= pd.DataFrame.from_dict(pdbhits,orient='index')
+pdbhitspd['Protein']=pdbhitspd.index
+pdbhitspd.columns=['hit pdb','Protein']
+
+pfamhitspd= pd.DataFrame.from_dict(pfamhits,orient='index')
+pfamhitspd['Protein']=pfamhitspd.index
+pfamhitspd.columns=['hit pfam','Protein']
+
+nrhitspd= pd.DataFrame.from_dict(nrhits,orient='index')
+nrhitspd['Protein']=nrhitspd.index
+nrhitspd.columns=['hit nr','Protein']
+
+
+# merge all into one dataset
+merge1=pd.merge(dbcanhitspd,pdbhitspd,on=['Protein'],how='outer')
+merge2=pd.merge(pfamhitspd,nrhitspd,on=['Protein'],how='outer')
+merge3=pd.merge(merge1,swisshitspd,on=['Protein'],how='outer')
+merge4=pd.merge(merge2,merge3,on=['Protein'],how='outer')
+mergedhitsall=merge4.to_dict('index')
+
+# use a heirachy to pritorise hits from some datasets over others
+hitsallordered={}
+for k,v in mergedhitsall.items():
+    protein=v['Protein']
+    dbcan=v['hit dbcan']
+    dbcan=str(dbcan)
+    nr=v['hit nr']
+    nr=str(nr)
+    pdb=v['hit pdb']
+    pdb=str(pdb)
+    pfam=v['hit pfam']
+    pfam=str(pfam)
+    swiss=v['hit swiss']
+    swiss=str(swiss)
+    if dbcan != 'nan':
+        hitsallordered[protein]=dbcan
+    else:
+        if pdb != 'nan':
+            hitsallordered[protein]=pdb
+        else:
+            if pfam != 'nan':
+                hitsallordered[protein]=pfam
+            else:
+                if swiss != 'nan':
+                    hitsallordered[protein]=swiss
+                else:
+                    if nr != 'nan':
+                        hitsallordered[protein]=nr
+                    else:
+                        pass
+
+##########################################################################################
+#   Create data to be checked to see if hits are actually cazy
+##########################################################################################
+
+
+# identify all the keywords that get hit
+listofwordshitlin=list(hitsallordered.values())
+listofwordshitlin=list(set(listofwordshitlin))
+pdwordshitlin=pd.DataFrame(listofwordshitlin,columns=['keyword'])
+
+#assign index as a value
+pdwordshitlin['value']=pdwordshitlin.index
+
+# provide each keyword with a different colour
+len1=len(pdwordshitlin)
+pdwordshitlin['colour']=sns.hls_palette(len1, s=0.5)
+
+#create a colour dictionary for each of the keywords
+pdwordshitlin=pdwordshitlin[['colour','keyword']]
+dictwordshitlin=dict(zip(pdwordshitlin.keyword,pdwordshitlin.colour))
+
+# assign a colour to each of the proteins based off of its hits
+hits21={}
+for k, v in hitsallordered.items():
+    for k1, v1 in dictwordshitlin.items():
+        if v == k1:
+            hits21[k]= v1
+
+    
+# create a dictionary with protein, colour and keyword in
+hits_all_info_1={}
+for k,v in hits21.items():
+    for k1,v1 in dictwordshitlin.items():
+        if v==v1:
+            hits_all_info_1[k]={}
+            hits_all_info_1[k]['keyword']=k1
+            hits_all_info_1[k]['colour']=v
+# tranform master hit information into dictionary
+merged_dict=mergeddescriptions.to_dict('index')
+# pull out the descriptions for each of the keyword hits 
+full_info_1={}
+for k,v in merged_dict.items():
+    for k1,v1 in hits_all_info_1.items():
+        if v['Target']==k1:
+            keyword=str(v1['keyword'])
+            dbcan=str(v['dbcan'])
+            nr=str(v['nr'])
+            pdb=str(v['pdb'])
+            pfam=str(v['pfam'])
+            swiss=str(v['swiss'])
+            if keyword.lower() in dbcan.lower():
+                full_info_1[k1]={}
+                full_info_1[k1]['dbcan']={}
+                full_info_1[k1]['dbcan']['description']=v['dbcan']
+                full_info_1[k1]['dbcan']['keyword']=keyword
+            if keyword.lower() in nr.lower():
+                full_info_1[k1]={}
+                full_info_1[k1]['nr']={}
+                full_info_1[k1]['nr']['description']=v['nr']
+                full_info_1[k1]['nr']['keyword']=keyword
+            if keyword.lower() in pdb.lower():
+                full_info_1[k1]={}
+                full_info_1[k1]['pdb']={}
+                full_info_1[k1]['pdb']['description']=v['pdb']
+                full_info_1[k1]['pdb']['keyword']=keyword
+            if keyword.lower() in pfam.lower():
+                full_info_1[k1]={}
+                full_info_1[k1]['pfam']={}
+                full_info_1[k1]['pfam']['description']=v['pfam']
+                full_info_1[k1]['pfam']['keyword']=keyword
+            if keyword.lower() in swiss.lower():
+                full_info_1[k1]={}
+                full_info_1[k1]['swiss']={}
+                full_info_1[k1]['swiss']['description']=v['swiss']
+                full_info_1[k1]['swiss']['keyword']=keyword
+
+
+# convert to dictionary ready to become pandas
+full_info_2={}
+for k,v in full_info_1.items():
+    full_info_2[k]={}
+    for k1,v1 in v.items():
+        full_info_2[k]['description']=v1['description']
+        full_info_2[k]['keyword']=v1['keyword']
+
+# save as pandas
+full_info_1_pandas=pd.DataFrame.from_dict(full_info_2, orient='index')
+
+# save hits as csv
+full_info_1_pandas.to_csv('hits_info_pre_filter.csv', index=True)
+
+# manually check hits are against cazy
+
+
+##########################################################################################
+#   Keyword Hits 
+##########################################################################################
+
+
+# import filtered dataset
+# import filtered dataset
+hits_filtered = pd.read_csv('hits_filtered.csv', header=None)
+
+# convert pandas to dictionary
+filtered_for_dict = hits_filtered[[0,1]]
+filtered_for_dict.columns=['protein','hit']
+filtered_dict=dict(zip(filtered_for_dict.protein,filtered_for_dict.hit))
+
+
+# identify all the keywords that get hit
+listofwordshitlin=list(filtered_dict.values())
+listofwordshitlin=list(set(listofwordshitlin))
+pdwordshitlin=pd.DataFrame(listofwordshitlin,columns=['keyword'])
+
+#assign index as a value
+pdwordshitlin['value']=pdwordshitlin.index
+
+# provide each keyword with a different colour
+len1=len(pdwordshitlin)
+pdwordshitlin['colour']=sns.hls_palette(len1, s=0.5)
+
+#create a colour dictionary for each of the keywords
+pdwordshitlin=pdwordshitlin[['colour','keyword']]
+dictwordshitlin=dict(zip(pdwordshitlin.keyword,pdwordshitlin.colour))
+
+# assign a colour to each of the proteins based off of its hits
+hits21={}
+for k, v in filtered_dict.items():
+    for k1, v1 in dictwordshitlin.items():
+        if v == k1:
+            hits21[k]= v1
+      
+ 
+  
+# create a dictionary with protein, colour and keyword in
+hits_all_info={}
+for k,v in hits21.items():
+    for k1,v1 in dictwordshitlin.items():
+        if v==v1:
+            hits_all_info[k]={}
+            hits_all_info[k]['keyword']=k1
+            hits_all_info[k]['colour']=v
+
+
+# identify number of proteins that hit a keyword before filtering
+chitin_proteins=[]
+for k,v in mergedhitsall.items():
+    temp=list(v.values())
+    if 'chitin' in temp:
+        chitin_proteins.append(v['Protein'])
+
+# tranform master hit information into dictionary
+merged_dict=mergeddescriptions.to_dict('index')
+# pull out the descriptions for each of the keyword hits 
+full_info={}
+for k,v in merged_dict.items():
+    for k1,v1 in hits_all_info.items():
+        if v['Target']==k1:
+            keyword=str(v1['keyword'])
+            dbcan=str(v['dbcan'])
+            nr=str(v['nr'])
+            pdb=str(v['pdb'])
+            pfam=str(v['pfam'])
+            swiss=str(v['swiss'])
+            if keyword.lower() in dbcan.lower():
+                full_info[k1]={}
+                full_info[k1]['dbcan']={}
+                full_info[k1]['dbcan']['description']=v['dbcan']
+                full_info[k1]['dbcan']['keyword']=keyword
+            if keyword.lower() in nr.lower():
+                full_info[k1]={}
+                full_info[k1]['nr']={}
+                full_info[k1]['nr']['description']=v['nr']
+                full_info[k1]['nr']['keyword']=keyword
+            if keyword.lower() in pdb.lower():
+                full_info[k1]={}
+                full_info[k1]['pdb']={}
+                full_info[k1]['pdb']['description']=v['pdb']
+                full_info[k1]['pdb']['keyword']=keyword
+            if keyword.lower() in pfam.lower():
+                full_info[k1]={}
+                full_info[k1]['pfam']={}
+                full_info[k1]['pfam']['description']=v['pfam']
+                full_info[k1]['pfam']['keyword']=keyword
+            if keyword.lower() in swiss.lower():
+                full_info[k1]={}
+                full_info[k1]['swiss']={}
+                full_info[k1]['swiss']['description']=v['swiss']
+                full_info[k1]['swiss']['keyword']=keyword
+
+ 
+# convert to dictionary ready to become pandas
+full_info_2={}
+for k,v in full_info.items():
+    full_info_2[k]={}
+    for k1,v1 in v.items():
+        full_info_2[k]['description']=v1['description']
+        full_info_2[k]['keyword']=v1['keyword']
+
+# save as pandas
+full_info_pandas=pd.DataFrame.from_dict(full_info_2, orient='index')
+
+# save hits as csv
+full_info_pandas.to_csv('hits_info.csv', index=True)
+
+
+
+
+##########################################################################################
+#   Identify which proteins are truly unknown
+##########################################################################################
+
+# change directory 
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data")
+
+# import the protein master sequence file
+seqfilename= 'MASTER_ISDE_extracellular_and_outer_membrane_proteins_3534.fna'
+fasta_sequences = SeqIO.parse(seqfilename,'fasta')
+
+# extract the proteins
+protein_list=[]
+with open('centroids.fasta', "w") as f:
+    for seq in fasta_sequences:
+        ID=seq.id
+        protein_list.append(ID)
+        
+# identify hich proteins are unknown        
+known_proteins=list(set(merged.Target))
+
+true_unknowns=[]
+for i in protein_list:
+    if i in known_proteins:
+        pass
+    else:true_unknowns.append(i)
+        
+
+
+###################################################################################################
+# plot the CAZy distribution in the dataset
+###################################################################################################
+
+# set working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/dbcan")
+
+# load in data
+dbcan = pd.read_csv('dbcan tally.csv', header=None)
+
+# set column names
+dbcan.columns=['Class','Tally']
+
+
+# transpose data
+dbcan2=dbcan.T
+
+# rename columns
+dbcan2.columns=['GH','CBM','PL','AA','GT','CE']
+
+# create pie chart of data
+my_data = dbcan.Tally
+my_labels = dbcan.Class
+my_colors = ('orchid','lightsalmon','mediumaquamarine','royalblue','yellow','skyblue')
+patches =plt.pie(my_data,autopct='%1.1f%%',radius=1.5,pctdistance=1.25,startangle=15,  colors=my_colors,wedgeprops = {'edgecolor':'black','linewidth': 0.7})
+plt.legend(dbcan2, loc=1,prop={'size': 9})
+plt.axis('equal')
+
+# save the image
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/final graph")
+plt.savefig('CAZymes.png', format='png')
+
+
+
+##########################################################################################
+#   Linclust Parameters Screen
+##########################################################################################
+
+# Change to linclust directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/linclust/outputs/screen")
+
+# create a list of all files to be processed
+filelist=list()
+for filename in os.listdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/linclust/outputs/screen"):
+    if filename.endswith(".m8"): 
+         filelist.append(filename)
+
+# Create dbcan dictionaries to label plots with
+dbcanhmmer = merged.set_index('Target')['HMMER'].dropna().to_dict()
+dbcanhotpep = merged.set_index('Target')['Hotpep'].dropna().to_dict()
+dbcandiamond = merged.set_index('Target')['DIAMOND'].dropna().to_dict()
+
+# Create a column with all hits to search through
+merged2 = merged
+merged2['All'] = merged2[merged2.columns[1:]].apply(lambda x: '+'.join(x.dropna().astype(str)),axis=1)
+merged2.columns.values[0] = "Target"
+
+
+# Loop through all files in list, plotting the graph for each of the parameters
+for x in filelist:
+    # open file
+    f = pd.read_csv(x,sep='\t')
+    # Provide column names
+    f.columns = ['Query','Target','Sequence identity','Alignment length','Number of missmatches','Number of gap openings','Domain start query','Domain end query','Domain start target','Domain end target','E value','Bit score']
+    # Select only columns that are needed
+    f2=f[['Query','Target','Sequence identity']]
+    # Remove any alignments to self
+    df = f2[f2['Query'] != f2['Target']]
+    # Merge dbcan information with cluster dataset for cytoscape
+    all1 = pd.merge(df,merged2, on =['Target'], how='left')
+    # save as csv
+    all1.to_csv('Data_{}.csv'.format(x), index=True)
+    # create networkx dataframe
+    D = nx.from_pandas_edgelist(df,target="Query",source="Target",edge_attr="Sequence identity")
+    
+    # Add edges between nodes (not sure if this information is already in but addign again to be safe)
+    for i in range(0,len(df)): 
+        D.add_edge(df.iloc[i,0] ,df.iloc[i,1],weight=df.iloc[i,2])
+
+    # Create a subset of dbcanhmmer if the annoated sequences are in the clusters
+    subset1 = {key: value for key, value in dbcanhmmer.items() if key in D.nodes()}
+    # Remove any 'N'
+    subset11 = {key:val for key, val in subset1.items() if val != 'N'}
+    labels = {}    
+    for node in D.nodes():
+        if node in subset11.keys():
+            labels[node] = subset11[node]
+    
+    # Create a subset of dbcanhotpep if the annoated sequences are in the clusters
+    subset2 = {key: value for key, value in dbcanhotpep.items() if key in D.nodes()}
+    # remove any 'N'
+    subset22 = {key: value for key, value in subset2.items() if value != 'N' }
+    labels2 = {}    
+    for node in D.nodes():
+        if node in subset22.keys():
+            labels2[node] = subset22[node]
+    
+    # # Create a subset of dbcandiamond if the annoated sequences are in the clusters
+    subset3 = {key: value for key, value in dbcandiamond.items() if key in D.nodes()}
+    # remove any 'N'
+    subset33 = {key: value for key, value in subset3.items() if value != 'N' }
+    labels3 = {}    
+    for node in D.nodes():
+        if node in subset33.keys():
+            labels3[node] = subset33[node]
+                           
+    # Define networkx positions of nodes
+    pos=nx.spring_layout(D)
+     
+    # Draw network x plot of clusters                      
+    nx.draw(D, pos, node_size=15, node_color="dimgrey", linewidths=2)
+    # Add all dbcan labels
+    nx.draw_networkx_labels(D,pos, labels, font_size=8,font_color='r')
+    nx.draw_networkx_labels(D,pos,labels2,font_size=8,font_color='r')
+    nx.draw_networkx_labels(D,pos,labels3,font_size=8,font_color='r')
+    # Save plot
+    plt.savefig('Graph_{}.png'.format(x), format="PNG")
+    # close plot ready for next loop
+    plt.close()
+ 
+    
+      
+##########################################################################################
+#    Isolating the centroids from Linclust 
+##########################################################################################
+
+# Change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/linclust/outputs/screen")
+
+# Load in the linclust for the optimised parameters
+ftsv = pd.read_csv('kmer_7-k_15-per_60.tsv',sep='\t', header=None)
+
+# Create a pair dictionary for pairs created by linclust (2 nodes connected by an edge)
+pairdictionary = {}
+for x in range(len(ftsv)):
+        currentid = ftsv.iloc[x,0]
+        currentvalue = ftsv.iloc[x,1]
+        pairdictionary.setdefault(currentid, [])
+        pairdictionary[currentid].append(currentvalue)
+
+# Sort dictionary of pairs into dictionary of clusters
+clusters_by_centroid={}
+for k, v in pairdictionary.items():
+    if len(pairdictionary[k]) >1 :
+        clusters_by_centroid[k]=v
+
+# list of the centroids
+centroidlist=list(clusters_by_centroid.keys())
+
+# import the protein master sequence file
+seqfilename= 'MASTER_ISDE_extracellular_and_outer_membrane_proteins_3534.fna'
+fasta_sequences = SeqIO.parse(seqfilename,'fasta')
+
+# extract the centroid sequences and save to a new file
+with open('centroids.fasta', "w") as f:
+    for seq in fasta_sequences:
+        if seq.id in centroidlist:
+            SeqIO.write([seq], f, "fasta")
+
+
+
+
+
+##########################################################################################
+#    E value for blasting Linclust centroids screen
+##########################################################################################
+
+# Change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/allvsallcentroids")
+
+# create a list of files to be run
+filelist=('allvsall001true.csv','allvsall01true.csv','allvsall1true.csv','allvsall10true.csv','allvsall005true.csv','allvsall05true.csv','allvsall5true.csv','allvsall50true.csv')
+
+# Loop through all files in list, plotting the graph for each of the parameters
+for x in filelist:
+    # open file
+    f = pd.read_csv(x,header="infer").dropna()
+
+    # create networkx dataframe
+    G_centroid = nx.from_pandas_edgelist(f,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+    # Define networkx positions of nodes
+    pos_centroid= nx.spring_layout(G_centroid,iterations=200,k=0.1)
+    
+    # Ammend the edge weights to be plotted
+    edge_weight_centroid=nx.get_edge_attributes(G_centroid, 'E Value')
+    for k,v in edge_weight_centroid.items():
+        y=(v+1)**-1
+        edge_weight_centroid[k]=y
+    max1=max(edge_weight_centroid.values())
+    min1=min(edge_weight_centroid.values())
+    for k,v in edge_weight_centroid.items():
+        y=((3.8-0.5)*(v-min1)/(max1-min1))+0.5
+        edge_weight_centroid[k]=y
+    
+    # create list of edge to weight with
+    edge_weight_centroid=list(edge_weight_centroid.values())
+    
+    # Draw network x plot                       
+    plt.figure(3,figsize=(10,10)) 
+    nx.draw_networkx_nodes(G_centroid, pos_centroid, node_size=100, node_shape= 'o', node_color='skyblue', edgecolors= '#404040',linewidths= 1)
+    nx.draw_networkx_edges(G_centroid, pos_centroid, alpha=0.5,  edge_color='black', width=edge_weight_centroid)
+    # Save plot
+    plt.savefig('Graph_{}.png'.format(x), format="PNG")
+    # close plot ready for next loop
+    plt.close()
+ 
+   
+
+
+
+##########################################################################################
+#   Extracting locations of Linclust centroids
+##########################################################################################
+
+# Change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/allvsallcentroids")
+
+# import the centroid file for selected E-value
+centroidfile=pd.read_csv('allvsall05true.csv',header="infer").dropna()
+# select only needed data
+centroidfile=centroidfile[['Query-Seq ID','Subject-Seq ID','E Value']]
+
+# create networkx graph and position for the centroids
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+pos_centroid= nx.spring_layout(G_centroid,iterations=100,k=0.6)
+
+
+
+##########################################################################################
+#   Linclust plot
+##########################################################################################
+
+# change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/linclust/outputs/screen")
+
+# read in the linclust data
+f4 = pd.read_csv('kmer_7-k_15-per_60.m8',sep='\t', header=None)
+
+# change columns to appropriate names and select relevant 
+f4.columns = ['Query','Target','Sequence identity','Alignment length','Number of missmatches','Number of gap openings','Domain start query','Domain end query','Domain start target','Domain end target','E value','Bit score']
+f4=f4[['Query','Target','Sequence identity']]
+
+# Remove nodes which self-hit
+df4 = f4[f4['Query'] != f4['Target']]
+
+# create networkx for the centroid of each linclust cluster
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+# create networkx for the linclust dataset
+D = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+
+# create a seperate networkx position for each of the individual clusters
+D_sorted = sorted(nx.connected_components(D), key=len, reverse=True)
+list_of_pos_dicts=[]
+for i in range(0,len(D_sorted)):
+    D_temp=D.subgraph(D_sorted[i])
+    pos_temp_1 = nx.spring_layout(D_temp)
+    list_of_pos_dicts.append(pos_temp_1)
+
+# create a subset for subplot with only the largest linclust clusters for centroids
+Gcc = sorted(nx.connected_components(G_centroid), key=len, reverse=True)
+D1 = G_centroid.subgraph(Gcc[0])
+D2 = G_centroid.subgraph(Gcc[1])
+D3 = G_centroid.subgraph(Gcc[2])
+D4 = G_centroid.subgraph(Gcc[3])
+D5 = G_centroid.subgraph(Gcc[4])
+D6 = G_centroid.subgraph(Gcc[5])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(Djoin1,Djoin2)
+G_centroid_big = nx.compose(Djoin3,Djoin4)
+
+# list of nodes in the subplot with the larger clusters in
+bignodeslist=list(G_centroid_big.nodes)
+
+# create a subset for subplot with only the smallest linclust clustersfor centroids
+G_centroid_small=G_centroid
+nodeslist=list(G_centroid.nodes)
+for n in nodeslist:
+    if n in bignodeslist:
+        G_centroid_small.remove_node(n)
+
+# re-create big subset as by creating the small subset, the large subset is altered above
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+Gcc = sorted(nx.connected_components(G_centroid), key=len, reverse=True)
+D1 = G_centroid.subgraph(Gcc[0])
+D2 = G_centroid.subgraph(Gcc[1])
+D3 = G_centroid.subgraph(Gcc[2])
+D4 = G_centroid.subgraph(Gcc[3])
+D5 = G_centroid.subgraph(Gcc[4])
+D6 = G_centroid.subgraph(Gcc[5])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(Djoin1,Djoin2)
+G_centroid_big = nx.compose(Djoin3,Djoin4)
+
+# create position subsets for subplot with all proteins 
+big_graph=[]
+small_graph=[]
+big_centroids=list(G_centroid_big.nodes)
+for i in range(0,len(list_of_pos_dicts)):
+    temp=list_of_pos_dicts[i]
+    keyslist=list(temp.keys())
+    if any(item in big_centroids for item in keyslist):
+        big_graph.append(temp)
+    else:
+        small_graph.append(temp)  
+
+# create the positional information for the centroids in the subplot for the largest clusters
+pos_centroid_big= nx.spring_layout(G_centroid_big, iterations=50,k=0.5)
+
+# make the distance between the centroids bigger. This is as centroid relationship used to 
+# give relative distance between linclust clusters. This distance between needs to be larger
+# so clusters sufficiently seperated.  
+for k,v in pos_centroid_big.items():
+    v[0]=v[0]*50
+    v[1]=v[1]*50
+
+# seperate out the linclust clusters by their centroid relative position
+pos_big_new={}
+for i in range(0,len(big_graph)):
+    for k, v in pos_centroid_big.items():
+        temp=big_graph[i]
+        keyslist=list(temp.keys())
+        if k in temp.keys():
+            for x in keyslist:
+                x_coord= temp[x][0]+v[0]
+                y_coord= temp[x][1]+v[1]
+                coords=[x_coord,y_coord]
+                pos_big_new[x]=coords
+ 
+# create networkx objects for all nodes for the subplot of larger and smaller clusters          
+D_small = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+nodeslist=list(D.nodes)
+for n in nodeslist:
+    if n in list(pos_big_new.keys()):
+        D_small.remove_node(n)
+D_big = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+nodeslist=list(D.nodes)
+for n in nodeslist:
+    if n in list(pos_big_new.keys()):
+        pass
+    else:
+        D_big.remove_node(n)
+
+# extract all edges for between the centroids from the blast
+G_centroid_edges = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+edge_weight_centroid=nx.get_edge_attributes(G_centroid_edges, 'E Value')
+centroid_edges_list=list(edge_weight_centroid.keys())
+
+
+# extract only the edges for the subpot with large clusters
+D_big_nodes=list(D_big.nodes)
+centroid_edges_big=[]
+for i in range(0,len(centroid_edges_list)):
+    edgelist=centroid_edges_list[i]
+    edge1=edgelist[0]
+    edge2=edgelist[1]
+    if edge1 in D_big_nodes:
+        if edge2 in D_big_nodes:          
+            centroid_edges_big.append(edgelist)
+     
+# add the edges for the blast between the centroids for large subplot            
+D_big.add_edges_from(centroid_edges_big)
+
+# extract only the edges for the subpot with small clusters
+D_small_nodes=list(D_small.nodes)
+centroid_edges_small=[]
+for i in range(0,len(centroid_edges_list)):
+    edgelist=centroid_edges_list[i]
+    edge1=edgelist[0]
+    edge2=edgelist[1]
+    if edge1 in D_small_nodes:
+        if edge2 in D_small_nodes:          
+            centroid_edges_small.append(edgelist)
+
+# add the edges for the blast between the centroids for small subplot                       
+D_small.add_edges_from(centroid_edges_small)
+
+# create networkx position for small subplot 
+pos_small=nx.spring_layout(D_small, iterations=120,k=0.3)
+
+# define grey for colouring nodes
+num=128/255
+
+# extract hit information for nodes in Linclust graph
+hitslin={}
+for node in D:
+     if node in hits21:
+         hitslin[node]=hits21[node]
+     else:
+         hitslin[node]=(num,num,num)
+
+# redefine edges for the large subplot so smaller E-values are thicker lines
+edge_weightlin_big=nx.get_edge_attributes(D_big, 'Sequence identity')
+for k,v in edge_weightlin_big.items():
+    y=(v+1)**-1
+    edge_weightlin_big[k]=y
+max1=max(edge_weightlin_big.values())
+min1=min(edge_weightlin_big.values())
+for k,v in edge_weightlin_big.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weightlin_big[k]=y
+edge_weightlin_big=list(edge_weightlin_big.values())
+
+# redefine edges for the small subplot so smaller E-values are thicker lines
+edge_weightlin_small=nx.get_edge_attributes(D_small, 'Sequence identity')
+for k,v in edge_weightlin_small.items():
+    y=(v+1)**-1
+    edge_weightlin_small[k]=y
+max1=max(edge_weightlin_small.values())
+min1=min(edge_weightlin_small.values())
+for k,v in edge_weightlin_small.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weightlin_small[k]=y
+edge_weightlin_small=list(edge_weightlin_small.values())
+
+# create a list of all proteins that are hit against (any hit, not just keywords)
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+
+# identify which nodes are completely unknown in dataset (not hit)
+trueunknown={}
+for k, v in hitslin.items():
+    if k in hitstargetlist:
+        pass
+    else:
+        trueunknown[k]=v
+trueunknownlist=list(trueunknown.keys())
+
+# identify which nodes hit the keywords, and those that are known but don't hit a keyword
+colourednode={}
+greynode1={}
+for k,v in hitslin.items():
+    if v == (num,num,num):
+        greynode1[k]=v
+    else:
+        colourednode[k]=v
+
+# remove the true unknowns from the known but not hitting keyword data
+greynode={}
+for k, v in greynode1.items():
+    if k in trueunknownlist:
+        pass
+    else:
+        greynode[k]=v
+
+# list of all nodes in the big dataset
+bignodes=list(D_big.nodes)
+
+# seperate the grey nodes (known but not keyword) to small and large subplot
+greynode_big={}
+greynode_small={}
+for k,v in greynode.items():
+    if k in bignodes:
+        greynode_big[k]=v
+    else:
+        greynode_small[k]=v
+
+# seperate the keyword nodes to small and large subplot
+colnode_big={}
+colnode_small={}
+for k,v in colourednode.items():
+    if k in bignodes:
+        colnode_big[k]=v
+    else:
+        colnode_small[k]=v
+
+# seperate the trueunknown nodes to small and large subplot
+unknownnode_big={}
+unknownnode_small={}
+for k,v in trueunknown.items():
+    if k in bignodes:
+        unknownnode_big[k]=v
+    else:
+        unknownnode_small[k]=v
+
+# create lists of all parameters for plotting
+greynodeslist_big=list(greynode_big.keys())
+colourednodeslist_big=list(colnode_big.keys())
+trueunknownlist_big=list(unknownnode_big.keys())
+colknowngrey_big=list(greynode_big.values())
+colknowncol_big=list(colnode_big.values())
+colunknown_big=list(unknownnode_big.values())
+greynodeslist_small=list(greynode_small.keys())
+colourednodeslist_small=list(colnode_small.keys())
+trueunknownlist_small=list(unknownnode_small.keys())
+colknowngrey_small=list(greynode_small.values())
+colknowncol_small=list(colnode_small.values())
+colunknown_small=list(unknownnode_small.values())
+
+# create a networkx for the original unmanipulated linclust data ready for colouring the clusters
+D = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+Gcc1 = sorted(nx.connected_components(D), key=len, reverse=True)
+
+# create a dictionary where each cluster has a unique identifying number
+clusters={}
+for i in range(0,len(Gcc1)):
+    A=list(Gcc1[i])
+    for x in range(0,len(A)):
+        protein=A[x]
+        clusters[protein]=i
+
+# create a colour dictionary for clusters with each cluster having a different colour
+colourse=list(clusters.values())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+# list of all the clusters identifying numbers
+clusters_ID=list(set(colourse))
+
+# create a dictionary so clusters now under keys of unique identifiers
+clusters_dict={}
+for i in clusters_ID:
+    clusters_dict[i] = [k for k in clusters.keys() if clusters[k] == i]
+
+# list of all the clusters, with memebers (as dictionaries)
+values=list(clusters_dict.values())
+
+# make sure no numbers missing in unique identifying numbers for clusters
+d2={}    
+for i in range(0,len(clusters_dict)):
+    d2[i]=values[i]
+
+
+#create a dictionary of cluster inforation to change alpha values depending on cluster contents
+# list of proteins that are hit
+hitproteins=list(full_info.keys())
+
+#list of proteins that are knwon but not hit
+nothitlist=list(merged.Target)
+
+# extract hit information for keywords for each cluster
+linclust_cluster_information={}
+for k,v in clusters_dict.items():
+    linclust_cluster_information[k]={}
+    for x in range(0,len(v)):
+        protein=v[x]
+        linclust_cluster_information[k][protein]={}
+        for k1,v1 in full_info.items():
+            if protein in hitproteins:
+                if protein ==k1:
+                    linclust_cluster_information[k][protein]['keyword']=v1
+            if protein not in hitproteins:
+                if protein in nothitlist: 
+                    for k2,v2 in merged_dict.items():
+                        if protein==v2['Target']:
+                            linclust_cluster_information[k][protein]['no keyword']=v2
+            if protein not in hitproteins + nothitlist:
+                linclust_cluster_information[k][protein]['true unknown']=protein
+
+# subset proteins that are in a cluster that contains either a CAZy hit or a true unknown
+higher_alpha_clusters=[]
+for k, v in linclust_cluster_information.items():
+    for k1, v1 in v.items():
+        for k2,v2 in v1.items():
+            if k2=='true unknown':
+                higher_alpha_clusters.append(k)
+            if k2=='keyword':
+                higher_alpha_clusters.append(k)
+higher_alpha_clusters=set(higher_alpha_clusters)
+higher_alpha_proteins=[]
+for k,v in linclust_cluster_information.items():
+    for k1,v1 in v.items():
+        if k in higher_alpha_clusters:
+            higher_alpha_proteins.append(k1)
+
+
+
+
+
+
+# seperate cluster colors into the two subplots
+d2_big={}
+d2_small={}
+for k,v in d2.items():
+    if all(item in D_big_nodes for item in v):
+        d2_big[k]=v
+    else:
+        d2_small[k]=v
+
+# reset identifying numbers for each of the two subplots, keeping cluster identifier
+values=list(d2_big.values())
+clusters_big=list(d2_big.keys())
+d2_big_2={}    
+for i in range(0,len(d2_big)):
+    d2_big_2[i]={}
+    d2_big_2[i]['proteins']=values[i]
+    d2_big_2[i]['cluster']=clusters_big[i]
+
+values=list(d2_small.values())
+d2_small_2={}  
+clusters_small=list(d2_small.keys())  
+for i in range(0,len(d2_small)):
+    d2_small_2[i]={}
+    d2_small_2[i]['proteins']=values[i]
+    d2_small_2[i]['cluster']=clusters_small[i]
+
+# identify coordinates for all points in the clusters for the large and small subplots
+clustercoords_big={}
+for k,v in d2_big_2.items():
+    l=[]
+    for k1,v1 in pos_big_new.items():
+        for x in range(0,len(v['proteins'])):
+            if v['proteins'][x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_big[k]={}
+    clustercoords_big[k]['coords']=l
+    clustercoords_big[k]['cluster']=v['cluster']
+    
+clustercoords_small={}
+for k,v in d2_small_2.items():
+    l=[]
+    for k1,v1 in pos_small.items():
+        for x in range(0,len(v['proteins'])):
+            if v['proteins'][x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_small[k]={}
+    clustercoords_small[k]['coords']=l
+    clustercoords_small[k]['cluster']=v['cluster']
+
+# create a dictionary of shapes to shade each of the clusters on the large subplot
+patchdict_big={}
+for i in range(0,len(clustercoords_big)):
+    # for each cluster extract the coordinates
+    points1=clustercoords_big[i]['coords']
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+    
+# create a subset of points in a circle around each point in the cluster, r is distance of 
+# new points from each of the defined points (larger is bigger width of shape)
+    circlecoords=[]
+    r=4
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+#put the new points in a dataframe
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+
+# draw a shape around each of the points        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    if clustercoords_big[i]['cluster'] in higher_alpha_clusters:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.65)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_big[i]=poly_new
+    else:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.35)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_big[i]=poly_new
+    
+    
+# repeat for the small subplot
+patchdict_small={}
+for i in range(0,len(clustercoords_small)):
+    points1=clustercoords_small[i]['coords']
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    circlecoords=[]
+    r=0.04
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    if clustercoords_small[i]['cluster'] in higher_alpha_clusters:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.65)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_small[i]=poly_new
+    else:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.35)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_small[i]=poly_new
+
+
+# divide the known non-hit proteins to those in a cluster of interest and those not, for big and small subplot
+greynodeslist_big_highalpha=[]
+greynodeslist_big_lowalpha=[]
+for i in greynodeslist_big:
+    if i in higher_alpha_proteins:
+        greynodeslist_big_highalpha.append(i)
+    else:
+        greynodeslist_big_lowalpha.append(i)
+colknowngrey_big_highalpha=[]
+colknowngrey_big_lowalpha=[]
+for i in greynodeslist_big:
+    if i in higher_alpha_proteins:
+        colknowngrey_big_highalpha=[].append(i)
+    else:
+        colknowngrey_big_lowalpha=[].append(i)
+greynodeslist_small_highalpha=[]
+greynodeslist_small_lowalpha=[]
+for i in greynodeslist_small:
+    if i in higher_alpha_proteins:
+        greynodeslist_small_highalpha.append(i)
+    else:
+        greynodeslist_small_lowalpha.append(i)
+colknowngrey_small_highalpha=[]
+colknowngrey_small_lowalpha=[]
+for i in greynodeslist_small:
+    if i in higher_alpha_proteins:
+        colknowngrey_small_highalpha=[].append(i)
+    else:
+        colknowngrey_small_lowalpha=[].append(i)
+
+# create markers for each point to be plotted in the legend
+marker1 = plt.Line2D([0], [0], markerfacecolor='White',color='w', marker='o', label='Known non-CAZY Protein',markersize=10,markeredgecolor='#606060')
+marker2= plt.Line2D([0], [0], marker='v', color='w', label='Unknown Protein', markerfacecolor='#404040', markersize=10, markeredgecolor='black')
+marker3=plt.Line2D([0], [0], marker='o', color='w', label='Potential CAZY', markerfacecolor=(0.8,0.5163076923076922,0.3999999999999999), markersize=10,markeredgecolor='#404040')
+# define the figure parameters, including subplots
+fig, axes = plt.subplots(nrows=1, ncols=2,figsize=(20,10))
+ax = axes.flatten()
+# plot large subplot
+ax[0].set_axis_off()
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= greynodeslist_big_highalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.8)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= greynodeslist_big_lowalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.6)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= trueunknownlist_big,node_size=75, node_shape= 'v', node_color='#505050', edgecolors= '#303030',linewidths= 1.5,ax=ax[0],alpha=0.8)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= colourednodeslist_big,node_size=75, node_shape= 'o', node_color=colknowncol_big, edgecolors= '#303030',linewidths= 1.5,ax=ax[0],alpha=0.8)
+nx.draw_networkx_edges(D_big, pos_big_new, alpha=0.5, edge_color='#000000',ax=ax[0])
+# plot small subplot
+ax[1].set_axis_off()
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= greynodeslist_small_highalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= greynodeslist_small_lowalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.6)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= trueunknownlist_small,node_size=75, node_shape= 'v', node_color='#505050', edgecolors= '#303030',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= colourednodeslist_small,node_size=75, node_shape= 'o', node_color=colknowncol_small, edgecolors= '#303030',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_edges(D_small, pos_small, alpha=0.5, width= edge_weightlin_small, edge_color='#000000',ax=ax[1])
+plt.legend(handles=[marker3,marker1,marker2], loc=1)
+# add the shapes to colour clusters
+for i in range(0,len(clustercoords_big)):
+    axes[0].add_patch(patchdict_big[i])
+for i in range(0,len(clustercoords_small)):
+    axes[1].add_patch(patchdict_small[i])
+
+
+##########################################################################################
+#   protein information for each cluster
+##########################################################################################
+
+# use the previously created cluster dictionary
+#transform into dictionary ready to be converted to pandas
+linclust_cluster_information2={}
+for k,v in linclust_cluster_information.items():
+    for k1,v1 in v.items():
+        linclust_cluster_information2[k1]={}
+        linclust_cluster_information2[k1]['cluster']=k
+        for k2,v2 in v1.items():
+            if k2=='keyword':
+                linclust_cluster_information2[k1]['hit type']=k2
+                for k3,v3 in v2.items():
+                    linclust_cluster_information2[k1]['keyword hit']=v3['keyword']
+                    linclust_cluster_information2[k1]['description']=v3['description']
+            else:
+                linclust_cluster_information2[k1]['hit type']=k2
+                linclust_cluster_information2[k1]['keyword hit']='n/a'
+                linclust_cluster_information2[k1]['description']='n/a'
+                
+# save as pandas
+linclust_pandas=pd.DataFrame.from_dict(linclust_cluster_information2, orient='index')
+
+#save as csv
+linclust_pandas.to_csv('linclust_cluster_information.csv', index=True)
+
+##########################################################################################
+#   Linclust plot, colouring only one keyword
+##########################################################################################
+
+# change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/linclust/outputs/screen")
+
+# read in the linclust data
+f4 = pd.read_csv('kmer_7-k_15-per_60.m8',sep='\t', header=None)
+
+# change columns to appropriate names and select relevant 
+f4.columns = ['Query','Target','Sequence identity','Alignment length','Number of missmatches','Number of gap openings','Domain start query','Domain end query','Domain start target','Domain end target','E value','Bit score']
+f4=f4[['Query','Target','Sequence identity']]
+
+# Remove nodes which self-hit
+df4 = f4[f4['Query'] != f4['Target']]
+
+# create networkx for the centroid of each linclust cluster
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+# create networkx for the linclust dataset
+D = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+
+# create a seperate networkx position for each of the individual clusters
+D_sorted = sorted(nx.connected_components(D), key=len, reverse=True)
+list_of_pos_dicts=[]
+for i in range(0,len(D_sorted)):
+    D_temp=D.subgraph(D_sorted[i])
+    pos_temp_1 = nx.spring_layout(D_temp)
+    list_of_pos_dicts.append(pos_temp_1)
+
+# create a subset for subplot with only the largest linclust clusters for centroids
+Gcc = sorted(nx.connected_components(G_centroid), key=len, reverse=True)
+D1 = G_centroid.subgraph(Gcc[0])
+D2 = G_centroid.subgraph(Gcc[1])
+D3 = G_centroid.subgraph(Gcc[2])
+D4 = G_centroid.subgraph(Gcc[3])
+D5 = G_centroid.subgraph(Gcc[4])
+D6 = G_centroid.subgraph(Gcc[5])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(Djoin1,Djoin2)
+G_centroid_big = nx.compose(Djoin3,Djoin4)
+
+# list of nodes in the subplot with the larger clusters in
+bignodeslist=list(G_centroid_big.nodes)
+
+# create a subset for subplot with only the smallest linclust clustersfor centroids
+G_centroid_small=G_centroid
+nodeslist=list(G_centroid.nodes)
+for n in nodeslist:
+    if n in bignodeslist:
+        G_centroid_small.remove_node(n)
+
+# re-create big subset as by creating the small subset, the large subset is altered above
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+Gcc = sorted(nx.connected_components(G_centroid), key=len, reverse=True)
+D1 = G_centroid.subgraph(Gcc[0])
+D2 = G_centroid.subgraph(Gcc[1])
+D3 = G_centroid.subgraph(Gcc[2])
+D4 = G_centroid.subgraph(Gcc[3])
+D5 = G_centroid.subgraph(Gcc[4])
+D6 = G_centroid.subgraph(Gcc[5])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(Djoin1,Djoin2)
+G_centroid_big = nx.compose(Djoin3,Djoin4)
+
+# create position subsets for subplot with all proteins 
+big_graph=[]
+small_graph=[]
+big_centroids=list(G_centroid_big.nodes)
+for i in range(0,len(list_of_pos_dicts)):
+    temp=list_of_pos_dicts[i]
+    keyslist=list(temp.keys())
+    if any(item in big_centroids for item in keyslist):
+        big_graph.append(temp)
+    else:
+        small_graph.append(temp)  
+
+# create the positional information for the centroids in the subplot for the largest clusters
+pos_centroid_big= nx.spring_layout(G_centroid_big, iterations=50,k=0.5)
+
+# make the distance between the centroids bigger. This is as centroid relationship used to 
+# give relative distance between linclust clusters. This distance between needs to be larger
+# so clusters sufficiently seperated.  
+for k,v in pos_centroid_big.items():
+    v[0]=v[0]*50
+    v[1]=v[1]*50
+
+# seperate out the linclust clusters by their centroid relative position
+pos_big_new={}
+for i in range(0,len(big_graph)):
+    for k, v in pos_centroid_big.items():
+        temp=big_graph[i]
+        keyslist=list(temp.keys())
+        if k in temp.keys():
+            for x in keyslist:
+                x_coord= temp[x][0]+v[0]
+                y_coord= temp[x][1]+v[1]
+                coords=[x_coord,y_coord]
+                pos_big_new[x]=coords
+ 
+# create networkx objects for all nodes for the subplot of larger and smaller clusters          
+D_small = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+nodeslist=list(D.nodes)
+for n in nodeslist:
+    if n in list(pos_big_new.keys()):
+        D_small.remove_node(n)
+D_big = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+nodeslist=list(D.nodes)
+for n in nodeslist:
+    if n in list(pos_big_new.keys()):
+        pass
+    else:
+        D_big.remove_node(n)
+
+# extract all edges for between the centroids from the blast
+G_centroid_edges = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+edge_weight_centroid=nx.get_edge_attributes(G_centroid_edges, 'E Value')
+centroid_edges_list=list(edge_weight_centroid.keys())
+
+
+# extract only the edges for the subpot with large clusters
+D_big_nodes=list(D_big.nodes)
+centroid_edges_big=[]
+for i in range(0,len(centroid_edges_list)):
+    edgelist=centroid_edges_list[i]
+    edge1=edgelist[0]
+    edge2=edgelist[1]
+    if edge1 in D_big_nodes:
+        if edge2 in D_big_nodes:          
+            centroid_edges_big.append(edgelist)
+     
+# add the edges for the blast between the centroids for large subplot            
+D_big.add_edges_from(centroid_edges_big)
+
+# extract only the edges for the subpot with small clusters
+D_small_nodes=list(D_small.nodes)
+centroid_edges_small=[]
+for i in range(0,len(centroid_edges_list)):
+    edgelist=centroid_edges_list[i]
+    edge1=edgelist[0]
+    edge2=edgelist[1]
+    if edge1 in D_small_nodes:
+        if edge2 in D_small_nodes:          
+            centroid_edges_small.append(edgelist)
+
+# add the edges for the blast between the centroids for small subplot                       
+D_small.add_edges_from(centroid_edges_small)
+
+# create networkx position for small subplot 
+pos_small=nx.spring_layout(D_small, iterations=120,k=0.3)
+
+# define grey for colouring nodes
+num=128/255
+
+# isolate only the nodes with the keywords
+hits_keyword=[]
+for k,v in hitsallordered.items():
+    if v=='chitin':
+        hits_keyword.append(k)
+
+
+
+hitslin={}
+for node in D:
+     if node in hits_keyword:
+         hitslin[node]=hits21[node]
+     else:
+         hitslin[node]=(num,num,num)
+
+# redefine edges for the large subplot so smaller E-values are thicker lines
+edge_weightlin_big=nx.get_edge_attributes(D_big, 'Sequence identity')
+for k,v in edge_weightlin_big.items():
+    y=(v+1)**-1
+    edge_weightlin_big[k]=y
+max1=max(edge_weightlin_big.values())
+min1=min(edge_weightlin_big.values())
+for k,v in edge_weightlin_big.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weightlin_big[k]=y
+edge_weightlin_big=list(edge_weightlin_big.values())
+
+# redefine edges for the small subplot so smaller E-values are thicker lines
+edge_weightlin_small=nx.get_edge_attributes(D_small, 'Sequence identity')
+for k,v in edge_weightlin_small.items():
+    y=(v+1)**-1
+    edge_weightlin_small[k]=y
+max1=max(edge_weightlin_small.values())
+min1=min(edge_weightlin_small.values())
+for k,v in edge_weightlin_small.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weightlin_small[k]=y
+edge_weightlin_small=list(edge_weightlin_small.values())
+
+# create a list of all proteins that are hit against (any hit, not just keywords)
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+
+# identify which nodes are completely unknown in dataset (not hit)
+trueunknown={}
+for k, v in hitslin.items():
+    if k in hitstargetlist:
+        pass
+    else:
+        trueunknown[k]=v
+trueunknownlist=list(trueunknown.keys())
+
+# identify which nodes hit the keywords, and those that are known but don't hit a keyword
+colourednode={}
+greynode1={}
+for k,v in hitslin.items():
+    if v == (num,num,num):
+        greynode1[k]=v
+    else:
+        colourednode[k]=v
+
+# remove the true unknowns from the known but not hitting keyword data
+greynode={}
+for k, v in greynode1.items():
+    if k in trueunknownlist:
+        pass
+    else:
+        greynode[k]=v
+
+# list of all nodes in the big dataset
+bignodes=list(D_big.nodes)
+
+# seperate the grey nodes (known but not keyword) to small and large subplot
+greynode_big={}
+greynode_small={}
+for k,v in greynode.items():
+    if k in bignodes:
+        greynode_big[k]=v
+    else:
+        greynode_small[k]=v
+
+# seperate the keyword nodes to small and large subplot
+colnode_big={}
+colnode_small={}
+for k,v in colourednode.items():
+    if k in bignodes:
+        colnode_big[k]=v
+    else:
+        colnode_small[k]=v
+
+# seperate the trueunknown nodes to small and large subplot
+unknownnode_big={}
+unknownnode_small={}
+for k,v in trueunknown.items():
+    if k in bignodes:
+        unknownnode_big[k]=v
+    else:
+        unknownnode_small[k]=v
+
+# create lists of all parameters for plotting
+greynodeslist_big=list(greynode_big.keys())
+colourednodeslist_big=list(colnode_big.keys())
+trueunknownlist_big=list(unknownnode_big.keys())
+colknowngrey_big=list(greynode_big.values())
+colknowncol_big=list(colnode_big.values())
+colunknown_big=list(unknownnode_big.values())
+greynodeslist_small=list(greynode_small.keys())
+colourednodeslist_small=list(colnode_small.keys())
+trueunknownlist_small=list(unknownnode_small.keys())
+colknowngrey_small=list(greynode_small.values())
+colknowncol_small=list(colnode_small.values())
+colunknown_small=list(unknownnode_small.values())
+
+# create a networkx for the original unmanipulated linclust data ready for colouring the clusters
+D = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+Gcc1 = sorted(nx.connected_components(D), key=len, reverse=True)
+
+# create a dictionary where each cluster has a unique identifying number
+clusters={}
+for i in range(0,len(Gcc1)):
+    A=list(Gcc1[i])
+    for x in range(0,len(A)):
+        protein=A[x]
+        clusters[protein]=i
+
+# create a colour dictionary for clusters with each cluster having a different colour
+colourse=list(clusters.values())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+# list of all the clusters identifying numbers
+clusters_ID=list(set(colourse))
+
+# create a dictionary so clusters now under keys of unique identifiers
+d={}
+for i in clusters_ID:
+    d[i] = [k for k in clusters.keys() if clusters[k] == i]
+
+# list of all the clusters, with memebers (as dictionaries)
+values=list(d.values())
+
+# make sure no numbers missing in unique identifying numbers for clusters
+d2={}    
+for i in range(0,len(d)):
+    d2[i]=values[i]
+
+# seperate cluster colors into the two subplots
+d2_big={}
+d2_small={}
+for k,v in d2.items():
+    if all(item in D_big_nodes for item in v):
+        d2_big[k]=v
+    else:
+        d2_small[k]=v
+
+# reset identifying numbers for each of the two subplots
+values=list(d2_big.values())
+d2_big_2={}    
+for i in range(0,len(d2_big)):
+    d2_big_2[i]=values[i]
+values=list(d2_small.values())
+d2_small_2={}    
+for i in range(0,len(d2_small)):
+    d2_small_2[i]=values[i]
+
+# identify coordinates for all points in the clusters for the large and small subplots
+clustercoords_big={}
+for k,v in d2_big_2.items():
+    l=[]
+    for k1,v1 in pos_big_new.items():
+        for x in range(0,len(v)):
+            if v[x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_big[k]=l
+clustercoords_small={}
+for k,v in d2_small_2.items():
+    l=[]
+    for k1,v1 in pos_small.items():
+        for x in range(0,len(v)):
+            if v[x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_small[k]=l
+
+# create a dictionary of shapes to shade each of the clusters on the large subplot
+patchdict_big={}
+for i in range(0,len(clustercoords_big)):
+    # for each cluster extract the coordinates
+    points1=clustercoords_big[i]
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+    
+# create a subset of points in a circle around each point in the cluster, r is distance of 
+# new points from each of the defined points (larger is bigger width of shape)
+    circlecoords=[]
+    r=4
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+#put the new points in a dataframe
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+
+# draw a shape around each of the points        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.5)
+    poly.set_capstyle('round')
+    poly_new=copy(poly)
+    patchdict_big[i]=poly_new
+
+# repeat for the small subplot
+patchdict_small={}
+for i in range(0,len(clustercoords_small)):
+    points1=clustercoords_small[i]
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    circlecoords=[]
+    r=0.03
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.5)
+    poly.set_capstyle('round')
+    poly_new=copy(poly)
+    patchdict_small[i]=poly_new
+
+
+# create markers for each point to be plotted in the legend
+marker1 = plt.Line2D([0], [0], markerfacecolor='White',color='w', marker='o', label='Known non-CAZY Protein',markersize=10,markeredgecolor='#606060')
+marker2= plt.Line2D([0], [0], marker='v', color='w', label='Unknown Protein', markerfacecolor='#404040', markersize=10, markeredgecolor='black')
+marker3=plt.Line2D([0], [0], marker='o', color='w', label='Chitin Protein', markerfacecolor=(0.8,0.5163076923076922,0.3999999999999999), markersize=10,markeredgecolor='#404040')
+# define the figure parameters, including subplots
+fig, axes = plt.subplots(nrows=1, ncols=2,figsize=(20,10))
+ax = axes.flatten()
+# plot large subplot
+ax[0].set_axis_off()
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= greynodeslist_big,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.7)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= colourednodeslist_big,node_size=75, node_shape= 'o', node_color=colknowncol_big, edgecolors= '#606060',linewidths= 1.5,ax=ax[0],alpha=0.7)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= trueunknownlist_big,node_size=75, node_shape= 'v', node_color='#404040', edgecolors= '#000000',linewidths= 1.5,ax=ax[0],alpha=0.7)
+nx.draw_networkx_edges(D_big, pos_big_new, alpha=0.5, edge_color='#000000',ax=ax[0])
+# plot small subplot
+ax[1].set_axis_off()
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= greynodeslist_small,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.7)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= colourednodeslist_small,node_size=75, node_shape= 'o', node_color=colknowncol_small, edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.65)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= trueunknownlist_small,node_size=75, node_shape= 'v', node_color='#404040', edgecolors= '#000000',linewidths= 1.5,ax=ax[1],alpha=0.7)
+nx.draw_networkx_edges(D_small, pos_small, alpha=0.5, width= edge_weightlin_small, edge_color='#000000',ax=ax[1])
+plt.legend(handles=[marker3,marker1,marker2], loc=0)
+# add the shapes to colour clusters
+for i in range(0,len(clustercoords_big)):
+    axes[0].add_patch(patchdict_big[i])
+for i in range(0,len(clustercoords_small)):
+    axes[1].add_patch(patchdict_small[i])
+
+
+
+##########################################################################################
+#   Linclust plot, keeping all clusters of size 1 if hit against a keyword
+##########################################################################################
+
+# change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/linclust/outputs/screen")
+
+# load in the data
+f4 = pd.read_csv('kmer_7-k_15-per_60.m8',sep='\t', header=None)
+
+# change columns to appropriate names and select relevant 
+f4.columns = ['Query','Target','Sequence identity','Alignment length','Number of missmatches','Number of gap openings','Domain start query','Domain end query','Domain start target','Domain end target','E value','Bit score']
+f4=f4[['Query','Target','Sequence identity']]
+
+# identify the proteins that hit themselves
+f4same=f4[f4['Query'] == f4['Target']]
+
+# only keep self hits if they are hits to keywords
+hitskeylist=list(hitsallordered.keys())
+hitskeep = f4same[f4same['Query'].isin(hitskeylist)]
+df5=pd.concat([df4,hitskeep])
+
+# create networkx object for new dataset including keyword hit singletons
+Dkept = nx.from_pandas_edgelist(df5,target="Query",source="Target",edge_attr="Sequence identity")
+# calculate networkx position
+poskept=nx.spring_layout(Dkept)
+
+# colour nodes that didnt hit grey
+hitslinkept={}
+for node in Dkept:
+     if node in hits21:
+         hitslinkept[node]=hits21[node]
+     else:
+         hitslinkept[node]=(num,num,num)
+
+# recalculate edge weights so lower e value is thicker line
+edge_weightlinkept=nx.get_edge_attributes(Dkept, 'Sequence identity')
+for k,v in edge_weightlinkept.items():
+    y=(v+1)**-1
+    edge_weightlinkept[k]=y
+max1=max(edge_weightlinkept.values())
+min1=min(edge_weightlinkept.values())
+for k,v in edge_weightlinkept.items():
+    y=((3.8-0.5)*(v-min1)/(max1-min1))+0.5
+    edge_weightlinkept[k]=y
+
+# create lists for plotting
+edge_weightlinkept_1=list(edge_weightlinkept.values())
+colshitlinkept=list(hitslinkept.values())
+
+# plot networkx graph
+plt.figure(3,figsize=(10,10)) 
+nx.draw_networkx_nodes(Dkept, poskept,node_size=50, node_shape= 'o', node_color=colshitlinkept, edgecolors= '#404040',linewidths= 1)
+nx.draw_networkx_edges(Dkept, poskept, alpha=0.5, width= edge_weightlinkept_1, edge_color='black')
+
+
+
+
+
+##########################################################################################
+#   Linclust plot, keeping self hits subplotted as grid
+##########################################################################################
+
+
+
+# change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/linclust/outputs/screen")
+
+# load in the data
+f4 = pd.read_csv('kmer_7-k_15-per_60.m8',sep='\t', header=None)
+
+# change columns to appropriate names and select relevant 
+f4.columns = ['Query','Target','Sequence identity','Alignment length','Number of missmatches','Number of gap openings','Domain start query','Domain end query','Domain start target','Domain end target','E value','Bit score']
+f4=f4[['Query','Target','Sequence identity']]
+
+# identify the proteins that hit themselves
+f4same=f4[f4['Query'] == f4['Target']]
+
+# Remove nodes which self-hit
+df4 = f4[f4['Query'] != f4['Target']]
+
+# create networkx for the centroid of each linclust cluster
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+# create networkx for the linclust dataset
+D = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+
+# only keep self hits if they are hits to keywords
+hitskeylist=list(hitsallordered.keys())
+hitskeep = f4same[f4same['Query'].isin(hitskeylist)]
+
+# list of nodes in the main plot
+nodeslist=list(D.nodes)
+
+# identify singletons that hit keywords
+hitskeep = hitskeep[~hitskeep['Query'].isin(nodeslist)]
+
+# create a seperate networkx position for each of the individual clusters
+D_sorted = sorted(nx.connected_components(D), key=len, reverse=True)
+list_of_pos_dicts=[]
+for i in range(0,len(D_sorted)):
+    D_temp=D.subgraph(D_sorted[i])
+    pos_temp_1 = nx.spring_layout(D_temp)
+    list_of_pos_dicts.append(pos_temp_1)
+
+# create a subset for subplot with only the largest linclust clusters for centroids
+Gcc = sorted(nx.connected_components(G_centroid), key=len, reverse=True)
+D1 = G_centroid.subgraph(Gcc[0])
+D2 = G_centroid.subgraph(Gcc[1])
+D3 = G_centroid.subgraph(Gcc[2])
+D4 = G_centroid.subgraph(Gcc[3])
+D5 = G_centroid.subgraph(Gcc[4])
+D6 = G_centroid.subgraph(Gcc[5])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(Djoin1,Djoin2)
+G_centroid_big = nx.compose(Djoin3,Djoin4)
+
+# list of nodes in the subplot with the larger clusters in
+bignodeslist=list(G_centroid_big.nodes)
+
+# create a subset for subplot with only the smallest linclust clustersfor centroids
+G_centroid_small=G_centroid
+nodeslist=list(G_centroid.nodes)
+for n in nodeslist:
+    if n in bignodeslist:
+        G_centroid_small.remove_node(n)
+
+# re-create big subset as by creating the small subset, the large subset is altered above
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+Gcc = sorted(nx.connected_components(G_centroid), key=len, reverse=True)
+D1 = G_centroid.subgraph(Gcc[0])
+D2 = G_centroid.subgraph(Gcc[1])
+D3 = G_centroid.subgraph(Gcc[2])
+D4 = G_centroid.subgraph(Gcc[3])
+D5 = G_centroid.subgraph(Gcc[4])
+D6 = G_centroid.subgraph(Gcc[5])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(Djoin1,Djoin2)
+G_centroid_big = nx.compose(Djoin3,Djoin4)
+
+# create position subsets for subplot with all proteins 
+big_graph=[]
+small_graph=[]
+big_centroids=list(G_centroid_big.nodes)
+for i in range(0,len(list_of_pos_dicts)):
+    temp=list_of_pos_dicts[i]
+    keyslist=list(temp.keys())
+    if any(item in big_centroids for item in keyslist):
+        big_graph.append(temp)
+    else:
+        small_graph.append(temp)  
+
+# create the positional information for the centroids in the subplot for the largest clusters
+pos_centroid_big= nx.spring_layout(G_centroid_big, iterations=50,k=0.5)
+
+# make the distance between the centroids bigger. This is as centroid relationship used to 
+# give relative distance between linclust clusters. This distance between needs to be larger
+# so clusters sufficiently seperated.  
+for k,v in pos_centroid_big.items():
+    v[0]=v[0]*50
+    v[1]=v[1]*50
+
+# seperate out the linclust clusters by their centroid relative position
+pos_big_new={}
+for i in range(0,len(big_graph)):
+    for k, v in pos_centroid_big.items():
+        temp=big_graph[i]
+        keyslist=list(temp.keys())
+        if k in temp.keys():
+            for x in keyslist:
+                x_coord= temp[x][0]+v[0]
+                y_coord= temp[x][1]+v[1]
+                coords=[x_coord,y_coord]
+                pos_big_new[x]=coords
+ 
+# create networkx objects for all nodes for the subplot of larger and smaller clusters          
+D_small = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+nodeslist=list(D.nodes)
+for n in nodeslist:
+    if n in list(pos_big_new.keys()):
+        D_small.remove_node(n)
+D_big = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+nodeslist=list(D.nodes)
+for n in nodeslist:
+    if n in list(pos_big_new.keys()):
+        pass
+    else:
+        D_big.remove_node(n)
+
+# extract all edges for between the centroids from the blast
+G_centroid_edges = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+edge_weight_centroid=nx.get_edge_attributes(G_centroid_edges, 'E Value')
+centroid_edges_list=list(edge_weight_centroid.keys())
+
+
+# extract only the edges for the subpot with large clusters
+D_big_nodes=list(D_big.nodes)
+centroid_edges_big=[]
+for i in range(0,len(centroid_edges_list)):
+    edgelist=centroid_edges_list[i]
+    edge1=edgelist[0]
+    edge2=edgelist[1]
+    if edge1 in D_big_nodes:
+        if edge2 in D_big_nodes:          
+            centroid_edges_big.append(edgelist)
+     
+# add the edges for the blast between the centroids for large subplot            
+D_big.add_edges_from(centroid_edges_big)
+
+# extract only the edges for the subpot with small clusters
+D_small_nodes=list(D_small.nodes)
+centroid_edges_small=[]
+for i in range(0,len(centroid_edges_list)):
+    edgelist=centroid_edges_list[i]
+    edge1=edgelist[0]
+    edge2=edgelist[1]
+    if edge1 in D_small_nodes:
+        if edge2 in D_small_nodes:          
+            centroid_edges_small.append(edgelist)
+
+# add the edges for the blast between the centroids for small subplot                       
+D_small.add_edges_from(centroid_edges_small)
+
+# create networkx position for small subplot 
+pos_small=nx.spring_layout(D_small, iterations=120,k=0.3)
+
+# define grey for colouring nodes
+num=128/255
+
+# extract hit information for nodes in Linclust graph
+hitslin={}
+for node in D:
+     if node in hits21:
+         hitslin[node]=hits21[node]
+     else:
+         hitslin[node]=(num,num,num)
+
+# redefine edges for the large subplot so smaller E-values are thicker lines
+edge_weightlin_big=nx.get_edge_attributes(D_big, 'Sequence identity')
+for k,v in edge_weightlin_big.items():
+    y=(v+1)**-1
+    edge_weightlin_big[k]=y
+max1=max(edge_weightlin_big.values())
+min1=min(edge_weightlin_big.values())
+for k,v in edge_weightlin_big.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weightlin_big[k]=y
+edge_weightlin_big=list(edge_weightlin_big.values())
+
+# redefine edges for the small subplot so smaller E-values are thicker lines
+edge_weightlin_small=nx.get_edge_attributes(D_small, 'Sequence identity')
+for k,v in edge_weightlin_small.items():
+    y=(v+1)**-1
+    edge_weightlin_small[k]=y
+max1=max(edge_weightlin_small.values())
+min1=min(edge_weightlin_small.values())
+for k,v in edge_weightlin_small.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weightlin_small[k]=y
+edge_weightlin_small=list(edge_weightlin_small.values())
+
+# create a list of all proteins that are hit against (any hit, not just keywords)
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+
+# identify which nodes are completely unknown in dataset (not hit)
+trueunknown={}
+for k, v in hitslin.items():
+    if k in hitstargetlist:
+        pass
+    else:
+        trueunknown[k]=v
+trueunknownlist=list(trueunknown.keys())
+
+# identify which nodes hit the keywords, and those that are known but don't hit a keyword
+colourednode={}
+greynode1={}
+for k,v in hitslin.items():
+    if v == (num,num,num):
+        greynode1[k]=v
+    else:
+        colourednode[k]=v
+
+# remove the true unknowns from the known but not hitting keyword data
+greynode={}
+for k, v in greynode1.items():
+    if k in trueunknownlist:
+        pass
+    else:
+        greynode[k]=v
+
+# list of all nodes in the big dataset
+bignodes=list(D_big.nodes)
+
+# seperate the grey nodes (known but not keyword) to small and large subplot
+greynode_big={}
+greynode_small={}
+for k,v in greynode.items():
+    if k in bignodes:
+        greynode_big[k]=v
+    else:
+        greynode_small[k]=v
+
+# seperate the keyword nodes to small and large subplot
+colnode_big={}
+colnode_small={}
+for k,v in colourednode.items():
+    if k in bignodes:
+        colnode_big[k]=v
+    else:
+        colnode_small[k]=v
+
+# seperate the trueunknown nodes to small and large subplot
+unknownnode_big={}
+unknownnode_small={}
+for k,v in trueunknown.items():
+    if k in bignodes:
+        unknownnode_big[k]=v
+    else:
+        unknownnode_small[k]=v
+
+# create lists of all parameters for plotting
+greynodeslist_big=list(greynode_big.keys())
+colourednodeslist_big=list(colnode_big.keys())
+trueunknownlist_big=list(unknownnode_big.keys())
+colknowngrey_big=list(greynode_big.values())
+colknowncol_big=list(colnode_big.values())
+colunknown_big=list(unknownnode_big.values())
+greynodeslist_small=list(greynode_small.keys())
+colourednodeslist_small=list(colnode_small.keys())
+trueunknownlist_small=list(unknownnode_small.keys())
+colknowngrey_small=list(greynode_small.values())
+colknowncol_small=list(colnode_small.values())
+colunknown_small=list(unknownnode_small.values())
+
+# create a networkx for the original unmanipulated linclust data ready for colouring the clusters
+D = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+Gcc1 = sorted(nx.connected_components(D), key=len, reverse=True)
+
+# create a dictionary where each cluster has a unique identifying number
+clusters={}
+for i in range(0,len(Gcc1)):
+    A=list(Gcc1[i])
+    for x in range(0,len(A)):
+        protein=A[x]
+        clusters[protein]=i
+
+# create a colour dictionary for clusters with each cluster having a different colour
+colourse=list(clusters.values())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+# list of all the clusters identifying numbers
+clusters_ID=list(set(colourse))
+
+# create a dictionary so clusters now under keys of unique identifiers
+clusters_dict={}
+for i in clusters_ID:
+    clusters_dict[i] = [k for k in clusters.keys() if clusters[k] == i]
+
+# list of all the clusters, with memebers (as dictionaries)
+values=list(clusters_dict.values())
+
+# make sure no numbers missing in unique identifying numbers for clusters
+d2={}    
+for i in range(0,len(clusters_dict)):
+    d2[i]=values[i]
+
+# seperate cluster colors into the two subplots
+d2_big={}
+d2_small={}
+for k,v in d2.items():
+    if all(item in D_big_nodes for item in v):
+        d2_big[k]=v
+    else:
+        d2_small[k]=v
+
+# reset identifying numbers for each of the two subplots
+values=list(d2_big.values())
+d2_big_2={}    
+for i in range(0,len(d2_big)):
+    d2_big_2[i]=values[i]
+values=list(d2_small.values())
+d2_small_2={}    
+for i in range(0,len(d2_small)):
+    d2_small_2[i]=values[i]
+
+# identify coordinates for all points in the clusters for the large and small subplots
+clustercoords_big={}
+for k,v in d2_big_2.items():
+    l=[]
+    for k1,v1 in pos_big_new.items():
+        for x in range(0,len(v)):
+            if v[x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_big[k]=l
+clustercoords_small={}
+for k,v in d2_small_2.items():
+    l=[]
+    for k1,v1 in pos_small.items():
+        for x in range(0,len(v)):
+            if v[x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_small[k]=l
+
+# create a dictionary of shapes to shade each of the clusters on the large subplot
+patchdict_big={}
+for i in range(0,len(clustercoords_big)):
+    # for each cluster extract the coordinates
+    points1=clustercoords_big[i]
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+    
+# create a subset of points in a circle around each point in the cluster, r is distance of 
+# new points from each of the defined points (larger is bigger width of shape)
+    circlecoords=[]
+    r=4
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+#put the new points in a dataframe
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+
+# draw a shape around each of the points        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.5)
+    poly.set_capstyle('round')
+    poly_new=copy(poly)
+    patchdict_big[i]=poly_new
+
+# repeat for the small subplot
+patchdict_small={}
+for i in range(0,len(clustercoords_small)):
+    points1=clustercoords_small[i]
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    circlecoords=[]
+    r=0.03
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.5)
+    poly.set_capstyle('round')
+    poly_new=copy(poly)
+    patchdict_small[i]=poly_new
+
+# create networkx object for new dataset including keyword hit singletons
+Dkept = nx.from_pandas_edgelist(hitskeep,target="Query",source="Target",edge_attr="Sequence identity")
+
+# nodes in Dkept
+keptnodes=list(Dkept.nodes)
+
+# number of nodes
+nodeslen=len(keptnodes)
+
+#number of nodes in x range
+xrange=36
+
+#number of nodes in y range
+yrange=27
+
+# add one for number of spaces between nodes
+spacesx=xrange+1
+spacesy=yrange+1
+
+# standardise spaces to axis of length 2
+spaces_standardisedx=2/spacesx
+spaces_standardisedy=2/spacesy
+
+
+# calculate all x values
+xvalues=[]
+position=-1
+for i in range(0,xrange):
+    position=position+spaces_standardisedx
+    xvalues.append(position)
+
+# calculate all y values
+yvalues=[]
+position=-1
+for i in range(0,yrange):
+    position=position+spaces_standardisedy
+    yvalues.append(position)
+
+
+# work out all combinations of coordinates
+combination_positions = list(itertools.product(yvalues, xvalues))
+
+# remove extra coordinates
+del combination_positions[936]
+del combination_positions[900]
+del combination_positions[864]
+del combination_positions[828]
+del combination_positions[792]
+del combination_positions[756]
+
+# assign each node a position
+poskept= dict(zip(keptnodes, combination_positions))
+
+# colour nodes that didnt hit grey
+hitslinkept={}
+for node in Dkept:
+     if node in hits21:
+         hitslinkept[node]=hits21[node]
+     else:
+         hitslinkept[node]=(num,num,num)
+
+
+# create lists for plotting
+edge_weightlinkept=nx.get_edge_attributes(Dkept, 'Sequence identity')
+edge_weightlinkept_1=list(edge_weightlinkept.values())
+colshitlinkept=list(hitslinkept.values())
+
+
+# create markers for each point to be plotted in the legend
+marker1 = plt.Line2D([0], [0], markerfacecolor='White',color='w', marker='o', label='Known non-CAZY Protein',markersize=10,markeredgecolor='#606060')
+marker2= plt.Line2D([0], [0], marker='v', color='w', label='Unknown Protein', markerfacecolor='#404040', markersize=10, markeredgecolor='black')
+marker3=plt.Line2D([0], [0], marker='o', color='w', label='Potential CAZY', markerfacecolor=(0.8,0.5163076923076922,0.3999999999999999), markersize=10,markeredgecolor='#404040')
+# define the figure parameters, including subplots
+fig, axes = plt.subplots(nrows=1, ncols=3,figsize=(30,10))
+ax = axes.flatten()
+# plot large subplot
+ax[0].set_axis_off()
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= greynodeslist_big,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.7)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= colourednodeslist_big,node_size=75, node_shape= 'o', node_color=colknowncol_big, edgecolors= '#606060',linewidths= 1.5,ax=ax[0],alpha=0.7)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= trueunknownlist_big,node_size=75, node_shape= 'v', node_color='#404040', edgecolors= '#000000',linewidths= 1.5,ax=ax[0],alpha=0.7)
+nx.draw_networkx_edges(D_big, pos_big_new, alpha=0.5, edge_color='#000000',ax=ax[0])
+# plot small subplot
+ax[1].set_axis_off()
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= greynodeslist_small,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.7)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= colourednodeslist_small,node_size=75, node_shape= 'o', node_color=colknowncol_small, edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.65)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= trueunknownlist_small,node_size=75, node_shape= 'v', node_color='#404040', edgecolors= '#000000',linewidths= 1.5,ax=ax[1],alpha=0.7)
+nx.draw_networkx_edges(D_small, pos_small, alpha=0.5, width= edge_weightlin_small, edge_color='#000000',ax=ax[1])
+ax[2].set_axis_off()
+nx.draw_networkx_nodes(Dkept, poskept,node_size=50, node_shape= 'o', node_color=colshitlinkept, edgecolors= '#404040',linewidths= 1,ax=ax[2])
+nx.draw_networkx_edges(Dkept, poskept, alpha=0.5, width= edge_weightlinkept_1, edge_color='black',ax=ax[2])
+# add the shapes to colour clusters
+for i in range(0,len(clustercoords_big)):
+    axes[0].add_patch(patchdict_big[i])
+for i in range(0,len(clustercoords_small)):
+    axes[1].add_patch(patchdict_small[i])
+plt.legend(handles=[marker3,marker1,marker2], loc=0)
+
+
+
+
+
+##########################################################################################
+#   Linclust plot, keeping all singletons
+##########################################################################################
+
+
+
+# change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/linclust/outputs/screen")
+
+# load in the data
+f4 = pd.read_csv('kmer_7-k_15-per_60.m8',sep='\t', header=None)
+
+# change columns to appropriate names and select relevant 
+f4.columns = ['Query','Target','Sequence identity','Alignment length','Number of missmatches','Number of gap openings','Domain start query','Domain end query','Domain start target','Domain end target','E value','Bit score']
+f4=f4[['Query','Target','Sequence identity']]
+
+# identify the proteins that hit themselves
+f4same=f4[f4['Query'] == f4['Target']]
+
+# Remove nodes which self-hit
+df4 = f4[f4['Query'] != f4['Target']]
+
+# create networkx for the centroid of each linclust cluster
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+# create networkx for the linclust dataset
+D = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+
+hitskeep = f4same
+
+# list of nodes in the main plot
+nodeslist=list(D.nodes)
+
+# only singletons that arent elsewhere in graph
+hitskeep = f4same
+hitskeep = hitskeep[~hitskeep['Query'].isin(nodeslist)]
+
+# create a seperate networkx position for each of the individual clusters
+D_sorted = sorted(nx.connected_components(D), key=len, reverse=True)
+list_of_pos_dicts=[]
+for i in range(0,len(D_sorted)):
+    D_temp=D.subgraph(D_sorted[i])
+    pos_temp_1 = nx.spring_layout(D_temp)
+    list_of_pos_dicts.append(pos_temp_1)
+
+# create a subset for subplot with only the largest linclust clusters for centroids
+Gcc = sorted(nx.connected_components(G_centroid), key=len, reverse=True)
+D1 = G_centroid.subgraph(Gcc[0])
+D2 = G_centroid.subgraph(Gcc[1])
+D3 = G_centroid.subgraph(Gcc[2])
+D4 = G_centroid.subgraph(Gcc[3])
+D5 = G_centroid.subgraph(Gcc[4])
+D6 = G_centroid.subgraph(Gcc[5])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(Djoin1,Djoin2)
+G_centroid_big = nx.compose(Djoin3,Djoin4)
+
+# list of nodes in the subplot with the larger clusters in
+bignodeslist=list(G_centroid_big.nodes)
+
+# create a subset for subplot with only the smallest linclust clustersfor centroids
+G_centroid_small=G_centroid
+nodeslist=list(G_centroid.nodes)
+for n in nodeslist:
+    if n in bignodeslist:
+        G_centroid_small.remove_node(n)
+
+# re-create big subset as by creating the small subset, the large subset is altered above
+G_centroid = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+Gcc = sorted(nx.connected_components(G_centroid), key=len, reverse=True)
+D1 = G_centroid.subgraph(Gcc[0])
+D2 = G_centroid.subgraph(Gcc[1])
+D3 = G_centroid.subgraph(Gcc[2])
+D4 = G_centroid.subgraph(Gcc[3])
+D5 = G_centroid.subgraph(Gcc[4])
+D6 = G_centroid.subgraph(Gcc[5])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(Djoin1,Djoin2)
+G_centroid_big = nx.compose(Djoin3,Djoin4)
+
+# create position subsets for subplot with all proteins 
+big_graph=[]
+small_graph=[]
+big_centroids=list(G_centroid_big.nodes)
+for i in range(0,len(list_of_pos_dicts)):
+    temp=list_of_pos_dicts[i]
+    keyslist=list(temp.keys())
+    if any(item in big_centroids for item in keyslist):
+        big_graph.append(temp)
+    else:
+        small_graph.append(temp)  
+
+# create the positional information for the centroids in the subplot for the largest clusters
+pos_centroid_big= nx.spring_layout(G_centroid_big, iterations=50,k=0.5)
+
+# make the distance between the centroids bigger. This is as centroid relationship used to 
+# give relative distance between linclust clusters. This distance between needs to be larger
+# so clusters sufficiently seperated.  
+for k,v in pos_centroid_big.items():
+    v[0]=v[0]*50
+    v[1]=v[1]*50
+
+# seperate out the linclust clusters by their centroid relative position
+pos_big_new={}
+for i in range(0,len(big_graph)):
+    for k, v in pos_centroid_big.items():
+        temp=big_graph[i]
+        keyslist=list(temp.keys())
+        if k in temp.keys():
+            for x in keyslist:
+                x_coord= temp[x][0]+v[0]
+                y_coord= temp[x][1]+v[1]
+                coords=[x_coord,y_coord]
+                pos_big_new[x]=coords
+ 
+# create networkx objects for all nodes for the subplot of larger and smaller clusters          
+D_small = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+nodeslist=list(D.nodes)
+for n in nodeslist:
+    if n in list(pos_big_new.keys()):
+        D_small.remove_node(n)
+D_big = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+nodeslist=list(D.nodes)
+for n in nodeslist:
+    if n in list(pos_big_new.keys()):
+        pass
+    else:
+        D_big.remove_node(n)
+
+# extract all edges for between the centroids from the blast
+G_centroid_edges = nx.from_pandas_edgelist(centroidfile,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+edge_weight_centroid=nx.get_edge_attributes(G_centroid_edges, 'E Value')
+centroid_edges_list=list(edge_weight_centroid.keys())
+
+
+# extract only the edges for the subpot with large clusters
+D_big_nodes=list(D_big.nodes)
+centroid_edges_big=[]
+for i in range(0,len(centroid_edges_list)):
+    edgelist=centroid_edges_list[i]
+    edge1=edgelist[0]
+    edge2=edgelist[1]
+    if edge1 in D_big_nodes:
+        if edge2 in D_big_nodes:          
+            centroid_edges_big.append(edgelist)
+     
+# add the edges for the blast between the centroids for large subplot            
+D_big.add_edges_from(centroid_edges_big)
+
+# extract only the edges for the subpot with small clusters
+D_small_nodes=list(D_small.nodes)
+centroid_edges_small=[]
+for i in range(0,len(centroid_edges_list)):
+    edgelist=centroid_edges_list[i]
+    edge1=edgelist[0]
+    edge2=edgelist[1]
+    if edge1 in D_small_nodes:
+        if edge2 in D_small_nodes:          
+            centroid_edges_small.append(edgelist)
+
+# add the edges for the blast between the centroids for small subplot                       
+D_small.add_edges_from(centroid_edges_small)
+
+# create networkx position for small subplot 
+pos_small=nx.spring_layout(D_small, iterations=120,k=0.3)
+
+# define grey for colouring nodes
+num=128/255
+
+# extract hit information for nodes in Linclust graph
+hitslin={}
+for node in D:
+     if node in hits21:
+         hitslin[node]=hits21[node]
+     else:
+         hitslin[node]=(num,num,num)
+
+# redefine edges for the large subplot so smaller E-values are thicker lines
+edge_weightlin_big=nx.get_edge_attributes(D_big, 'Sequence identity')
+for k,v in edge_weightlin_big.items():
+    y=(v+1)**-1
+    edge_weightlin_big[k]=y
+max1=max(edge_weightlin_big.values())
+min1=min(edge_weightlin_big.values())
+for k,v in edge_weightlin_big.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weightlin_big[k]=y
+edge_weightlin_big=list(edge_weightlin_big.values())
+
+# redefine edges for the small subplot so smaller E-values are thicker lines
+edge_weightlin_small=nx.get_edge_attributes(D_small, 'Sequence identity')
+for k,v in edge_weightlin_small.items():
+    y=(v+1)**-1
+    edge_weightlin_small[k]=y
+max1=max(edge_weightlin_small.values())
+min1=min(edge_weightlin_small.values())
+for k,v in edge_weightlin_small.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weightlin_small[k]=y
+edge_weightlin_small=list(edge_weightlin_small.values())
+
+# create a list of all proteins that are hit against (any hit, not just keywords)
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+
+# identify which nodes are completely unknown in dataset (not hit)
+trueunknown={}
+for k, v in hitslin.items():
+    if k in hitstargetlist:
+        pass
+    else:
+        trueunknown[k]=v
+trueunknownlist=list(trueunknown.keys())
+
+# identify which nodes hit the keywords, and those that are known but don't hit a keyword
+colourednode={}
+greynode1={}
+for k,v in hitslin.items():
+    if v == (num,num,num):
+        greynode1[k]=v
+    else:
+        colourednode[k]=v
+
+# remove the true unknowns from the known but not hitting keyword data
+greynode={}
+for k, v in greynode1.items():
+    if k in trueunknownlist:
+        pass
+    else:
+        greynode[k]=v
+
+# list of all nodes in the big dataset
+bignodes=list(D_big.nodes)
+
+# seperate the grey nodes (known but not keyword) to small and large subplot
+greynode_big={}
+greynode_small={}
+for k,v in greynode.items():
+    if k in bignodes:
+        greynode_big[k]=v
+    else:
+        greynode_small[k]=v
+
+# seperate the keyword nodes to small and large subplot
+colnode_big={}
+colnode_small={}
+for k,v in colourednode.items():
+    if k in bignodes:
+        colnode_big[k]=v
+    else:
+        colnode_small[k]=v
+
+# seperate the trueunknown nodes to small and large subplot
+unknownnode_big={}
+unknownnode_small={}
+for k,v in trueunknown.items():
+    if k in bignodes:
+        unknownnode_big[k]=v
+    else:
+        unknownnode_small[k]=v
+
+# create lists of all parameters for plotting
+greynodeslist_big=list(greynode_big.keys())
+colourednodeslist_big=list(colnode_big.keys())
+trueunknownlist_big=list(unknownnode_big.keys())
+colknowngrey_big=list(greynode_big.values())
+colknowncol_big=list(colnode_big.values())
+colunknown_big=list(unknownnode_big.values())
+greynodeslist_small=list(greynode_small.keys())
+colourednodeslist_small=list(colnode_small.keys())
+trueunknownlist_small=list(unknownnode_small.keys())
+colknowngrey_small=list(greynode_small.values())
+colknowncol_small=list(colnode_small.values())
+colunknown_small=list(unknownnode_small.values())
+
+# create a networkx for the original unmanipulated linclust data ready for colouring the clusters
+D = nx.from_pandas_edgelist(df4,target="Query",source="Target",edge_attr="Sequence identity")
+Gcc1 = sorted(nx.connected_components(D), key=len, reverse=True)
+
+# create a dictionary where each cluster has a unique identifying number
+clusters={}
+for i in range(0,len(Gcc1)):
+    A=list(Gcc1[i])
+    for x in range(0,len(A)):
+        protein=A[x]
+        clusters[protein]=i
+
+# create a colour dictionary for clusters with each cluster having a different colour
+colourse=list(clusters.values())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+# list of all the clusters identifying numbers
+clusters_ID=list(set(colourse))
+
+# create a dictionary so clusters now under keys of unique identifiers
+clusters_dict={}
+for i in clusters_ID:
+    clusters_dict[i] = [k for k in clusters.keys() if clusters[k] == i]
+
+# list of all the clusters, with memebers (as dictionaries)
+values=list(clusters_dict.values())
+
+# make sure no numbers missing in unique identifying numbers for clusters
+d2={}    
+for i in range(0,len(clusters_dict)):
+    d2[i]=values[i]
+
+#create a dictionary of cluster inforation to change alpha values depending on cluster contents
+# list of proteins that are hit
+hitproteins=list(full_info.keys())
+
+#list of proteins that are knwon but not hit
+nothitlist=list(merged.Target)
+
+# extract hit information for keywords for each cluster
+linclust_cluster_information={}
+for k,v in clusters_dict.items():
+    linclust_cluster_information[k]={}
+    for x in range(0,len(v)):
+        protein=v[x]
+        linclust_cluster_information[k][protein]={}
+        for k1,v1 in full_info.items():
+            if protein in hitproteins:
+                if protein ==k1:
+                    linclust_cluster_information[k][protein]['keyword']=v1
+            if protein not in hitproteins:
+                if protein in nothitlist: 
+                    for k2,v2 in merged_dict.items():
+                        if protein==v2['Target']:
+                            linclust_cluster_information[k][protein]['no keyword']=v2
+            if protein not in hitproteins + nothitlist:
+                linclust_cluster_information[k][protein]['true unknown']=protein
+
+# subset proteins that are in a cluster that contains either a CAZy hit or a true unknown
+higher_alpha_clusters=[]
+for k, v in linclust_cluster_information.items():
+    for k1, v1 in v.items():
+        for k2,v2 in v1.items():
+            if k2=='true unknown':
+                higher_alpha_clusters.append(k)
+            if k2=='keyword':
+                higher_alpha_clusters.append(k)
+higher_alpha_clusters=set(higher_alpha_clusters)
+higher_alpha_proteins=[]
+for k,v in linclust_cluster_information.items():
+    for k1,v1 in v.items():
+        if k in higher_alpha_clusters:
+            higher_alpha_proteins.append(k1)
+
+
+
+
+
+
+# seperate cluster colors into the two subplots
+d2_big={}
+d2_small={}
+for k,v in d2.items():
+    if all(item in D_big_nodes for item in v):
+        d2_big[k]=v
+    else:
+        d2_small[k]=v
+
+# reset identifying numbers for each of the two subplots, keeping cluster identifier
+values=list(d2_big.values())
+clusters_big=list(d2_big.keys())
+d2_big_2={}    
+for i in range(0,len(d2_big)):
+    d2_big_2[i]={}
+    d2_big_2[i]['proteins']=values[i]
+    d2_big_2[i]['cluster']=clusters_big[i]
+
+values=list(d2_small.values())
+d2_small_2={}  
+clusters_small=list(d2_small.keys())  
+for i in range(0,len(d2_small)):
+    d2_small_2[i]={}
+    d2_small_2[i]['proteins']=values[i]
+    d2_small_2[i]['cluster']=clusters_small[i]
+
+# identify coordinates for all points in the clusters for the large and small subplots
+clustercoords_big={}
+for k,v in d2_big_2.items():
+    l=[]
+    for k1,v1 in pos_big_new.items():
+        for x in range(0,len(v['proteins'])):
+            if v['proteins'][x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_big[k]={}
+    clustercoords_big[k]['coords']=l
+    clustercoords_big[k]['cluster']=v['cluster']
+    
+clustercoords_small={}
+for k,v in d2_small_2.items():
+    l=[]
+    for k1,v1 in pos_small.items():
+        for x in range(0,len(v['proteins'])):
+            if v['proteins'][x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_small[k]={}
+    clustercoords_small[k]['coords']=l
+    clustercoords_small[k]['cluster']=v['cluster']
+
+# create a dictionary of shapes to shade each of the clusters on the large subplot
+patchdict_big={}
+for i in range(0,len(clustercoords_big)):
+    # for each cluster extract the coordinates
+    points1=clustercoords_big[i]['coords']
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+    
+# create a subset of points in a circle around each point in the cluster, r is distance of 
+# new points from each of the defined points (larger is bigger width of shape)
+    circlecoords=[]
+    r=2.5
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+#put the new points in a dataframe
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+
+# draw a shape around each of the points        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    if clustercoords_big[i]['cluster'] in higher_alpha_clusters:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.65)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_big[i]=poly_new
+    else:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.35)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_big[i]=poly_new
+    
+    
+# repeat for the small subplot
+patchdict_small={}
+for i in range(0,len(clustercoords_small)):
+    points1=clustercoords_small[i]['coords']
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    circlecoords=[]
+    r=0.04
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    if clustercoords_small[i]['cluster'] in higher_alpha_clusters:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.65)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_small[i]=poly_new
+    else:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.35)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_small[i]=poly_new
+
+
+# divide the known non-hit proteins to those in a cluster of interest and those not, for big and small subplot
+greynodeslist_big_highalpha=[]
+greynodeslist_big_lowalpha=[]
+for i in greynodeslist_big:
+    if i in higher_alpha_proteins:
+        greynodeslist_big_highalpha.append(i)
+    else:
+        greynodeslist_big_lowalpha.append(i)
+colknowngrey_big_highalpha=[]
+colknowngrey_big_lowalpha=[]
+for i in greynodeslist_big:
+    if i in higher_alpha_proteins:
+        colknowngrey_big_highalpha=[].append(i)
+    else:
+        colknowngrey_big_lowalpha=[].append(i)
+greynodeslist_small_highalpha=[]
+greynodeslist_small_lowalpha=[]
+for i in greynodeslist_small:
+    if i in higher_alpha_proteins:
+        greynodeslist_small_highalpha.append(i)
+    else:
+        greynodeslist_small_lowalpha.append(i)
+colknowngrey_small_highalpha=[]
+colknowngrey_small_lowalpha=[]
+for i in greynodeslist_small:
+    if i in higher_alpha_proteins:
+        colknowngrey_small_highalpha=[].append(i)
+    else:
+        colknowngrey_small_lowalpha=[].append(i)
+
+
+# create networkx object for new dataset including keyword hit singletons
+Dkept = nx.from_pandas_edgelist(hitskeep,target="Query",source="Target",edge_attr="Sequence identity")
+
+# assign each node a position
+poskept= nx.spectral_layout(Dkept)
+
+# colour nodes that didnt hit grey
+hitslinkept={}
+for node in Dkept:
+     if node in hits21:
+         hitslinkept[node]=hits21[node]
+     else:
+         hitslinkept[node]=(num,num,num)
+
+# identify which nodes are completely unknown in dataset (not hit)
+trueunknownkept={}
+for k, v in hitslinkept.items():
+    if k in hitstargetlist:
+        pass
+    else:
+        trueunknownkept[k]=v
+trueunknownkeptlist=list(trueunknownkept.keys())
+
+# identify which nodes hit the keywords, and those that are known but don't hit a keyword
+colourednodekept={}
+greynode1kept={}
+for k,v in hitslinkept.items():
+    if v == (num,num,num):
+        greynode1kept[k]=v
+    else:
+        colourednodekept[k]=v
+
+# remove the true unknowns from the known but not hitting keyword data
+greynodekept={}
+for k, v in greynode1kept.items():
+    if k in trueunknownkeptlist:
+        pass
+    else:
+        greynodekept[k]=v
+
+# create lists for plotting
+edge_weightlinkept=nx.get_edge_attributes(Dkept, 'Sequence identity')
+edge_weightlinkept_1=list(edge_weightlinkept.values())
+colourednodeskept=list(colourednodekept.keys())
+colourednodeskeptcols=list(colourednodekept.values())
+greynodeskept=list(greynodekept.keys())
+greynodeskeptcols=list(greynodekept.values())
+unknownnodeskept=list(trueunknownkept.keys())
+unknownnodeskeptcols=list(trueunknownkept.values())
+
+
+
+
+
+# create markers for each point to be plotted in the legend
+marker1 = plt.Line2D([0], [0], markerfacecolor='White',color='w', marker='o', label='Known non-CAZY',markersize=10,markeredgecolor='#606060')
+marker2= plt.Line2D([0], [0], marker='v', color='w', label='True Unknown', markerfacecolor='#404040', markersize=10, markeredgecolor='black')
+marker3=plt.Line2D([0], [0], marker='o', color='w', label='CAZY', markerfacecolor=(0.8,0.5163076923076922,0.3999999999999999), markersize=10,markeredgecolor='#404040')
+# define the figure parameters, including subplots
+fig, axes = plt.subplots(nrows=1, ncols=3,figsize=(30,10))
+ax = axes.flatten()
+# plot large subplot
+ax[0].set_axis_off()
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= greynodeslist_big_highalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.8)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= greynodeslist_big_lowalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.6)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= trueunknownlist_big,node_size=75, node_shape= 'v', node_color='#505050', edgecolors= '#303030',linewidths= 1.5,ax=ax[0],alpha=0.8)
+nx.draw_networkx_nodes(D_big, pos_big_new, nodelist= colourednodeslist_big,node_size=75, node_shape= 'o', node_color=colknowncol_big, edgecolors= '#303030',linewidths= 1.5,ax=ax[0],alpha=0.8)
+nx.draw_networkx_edges(D_big, pos_big_new, alpha=0.5, edge_color='#000000',ax=ax[0])
+# plot small subplot
+ax[1].set_axis_off()
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= greynodeslist_small_highalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= greynodeslist_small_lowalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.6)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= trueunknownlist_small,node_size=75, node_shape= 'v', node_color='#505050', edgecolors= '#303030',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_nodes(D_small, pos_small, nodelist= colourednodeslist_small,node_size=75, node_shape= 'o', node_color=colknowncol_small, edgecolors= '#303030',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_edges(D_small, pos_small, alpha=0.5, width= edge_weightlin_small, edge_color='#000000',ax=ax[1])
+ax[2].set_axis_off()
+nx.draw_networkx_nodes(Dkept, poskept, nodelist= greynodeskept,node_size=40, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[2],alpha=0.8)
+nx.draw_networkx_nodes(Dkept, poskept, nodelist= colourednodeskept,node_size=40, node_shape= 'o', node_color=colourednodeskeptcols, edgecolors= '#606060',linewidths= 1.5,ax=ax[2],alpha=1)
+nx.draw_networkx_nodes(Dkept, poskept, nodelist= unknownnodeskept,node_size=40, node_shape= 'v', node_color='#606060', edgecolors= '#404040',linewidths= 1.5,ax=ax[2],alpha=0.8)
+nx.draw_networkx_edges(Dkept, poskept, alpha=0.5, width= edge_weightlinkept_1, edge_color='black',ax=ax[2])
+# add the shapes to colour clusters
+for i in range(0,len(clustercoords_big)):
+    axes[0].add_patch(patchdict_big[i])
+for i in range(0,len(clustercoords_small)):
+    axes[1].add_patch(patchdict_small[i])
+plt.legend(handles=[marker3,marker1,marker2], loc=0)
+
+
+
+
+
+##########################################################################################
+#   Blast all vs all screen e values
+##########################################################################################
+
+
+
+# Change directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/allvsall/all vs all blast final")
+
+# create a list of files to be run
+filelist=('allvsall05true.csv','allvsall025true.csv','allvsall01true.csv')
+
+# Loop through all files in list, plotting the graph for each of the parameters
+for x in filelist:
+    # open file
+    f = pd.read_csv(x,header="infer").dropna()
+
+    # create networkx dataframe
+    G_centroid = nx.from_pandas_edgelist(f,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+    # Define networkx positions of nodes
+    pos_centroid= nx.spring_layout(G_centroid,iterations=200,k=0.1)
+    
+    # Ammend the edge weights to be plotted
+    edge_weight_centroid=nx.get_edge_attributes(G_centroid, 'E Value')
+    for k,v in edge_weight_centroid.items():
+        y=(v+1)**-1
+        edge_weight_centroid[k]=y
+    max1=max(edge_weight_centroid.values())
+    min1=min(edge_weight_centroid.values())
+    for k,v in edge_weight_centroid.items():
+        y=((3.8-0.5)*(v-min1)/(max1-min1))+0.5
+        edge_weight_centroid[k]=y
+    
+    # create list of edge to weight with
+    edge_weight_centroid=list(edge_weight_centroid.values())
+    
+    # Draw network x plot                       
+    plt.figure(3,figsize=(10,10)) 
+    nx.draw_networkx_nodes(G_centroid, pos_centroid, node_size=100, node_shape= 'o', node_color='skyblue', edgecolors= '#404040',linewidths= 1)
+    nx.draw_networkx_edges(G_centroid, pos_centroid, alpha=0.5,  edge_color='black', width=edge_weight_centroid)
+    # Save plot
+    plt.savefig('Graph_{}.png'.format(x), format="PNG")
+    # close plot ready for next loop
+    plt.close()
+ 
+   
+##########################################################################################
+#   Blast all vs all selected E value
+##########################################################################################
+
+# set working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/allvsall/all vs all blast final")
+
+# import the data
+e=pd.read_csv('allvsall025true.csv',header="infer")
+fe=e[['Query-Seq ID','Subject-Seq ID','E Value']]
+
+# remove self hits
+fe = fe[fe['Query-Seq ID'] != fe['Subject-Seq ID']]
+
+# create networkx graph
+Ge = nx.from_pandas_edgelist(fe,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+# manipulate edges so smaller evalues create thicker lines
+listedgese = dict(Ge.edges)
+edge_weighte=nx.get_edge_attributes(Ge, 'E Value')
+for k,v in edge_weighte.items():
+    y=(v+1)**-1
+    edge_weighte[k]=y
+max1=max(edge_weighte.values())
+min1=min(edge_weighte.values())
+for k,v in edge_weighte.items():
+    y=((3.8-0.5)*(v-min1)/(max1-min1))+0.5
+    edge_weighte[k]=y
+edge_weighte_1=list(edge_weighte.values())
+
+# set colour for grey nodes
+num=128/255
+
+# colour hit nodes, all others grey
+hitsallvall={}
+for node in Ge:
+     if node in hits21:
+         hitsallvall[node]=hits21[node]
+     else:
+         hitsallvall[node]=(num,num,num)
+
+# identify nodes which dont hit on any database
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+trueunknown={}
+known={}
+for k, v in hitsallvall.items():
+    if k in hitstargetlist:
+        known[k]=v
+    else:
+        trueunknown[k]=v
+
+# calculate networkx position information
+pose=nx.spring_layout(Ge,iterations=300,k=0.1)
+
+# create lists for plotting of colour and node lists
+hitnodes=list(known.keys())
+nothitnodes=list(trueunknown.keys())
+hitcols=list(known.values())
+nothitcols=list(trueunknown.values())
+
+# identify clusters in plot
+partitione = community_louvain.best_partition(Ge)
+
+# give each cluster a unique colour
+colourse=list(partitione.values())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+# list of colours
+clusters_ID=list(partitione.values())
+clusters_ID=list(set(colourse))
+
+# create a dictionary so clusters now under keys of unique identifiers
+d={}
+for i in clusters_ID:
+    d[i] = [k for k in partitione.keys() if partitione[k] == i]
+
+# remove clusters of length 1
+d1={}
+for k,v in d.items():
+    if len(v)<2:
+        pass
+    else:
+        d1[k]=v
+
+# reset identifier number so none missing
+values=list(d1.values())
+d2={}    
+for i in range(0,len(d1)):
+    d2[i]=values[i]
+
+# subset the coordinates of each cluster into list           
+clustercoords={}
+for k,v in d2.items():
+    l=[]
+    for k1,v1 in pose.items():
+        for x in range(0,len(v)):
+            if v[x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords[k]=l
+            
+# create a shaded shape around each of the clusters
+patchdict={}
+for i in range(0,len(clustercoords)):
+    # extract the points for each cluster
+    points1=clustercoords[i]
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    # draw a circle of points around each point in the cluster
+    circlecoords=[]
+    r=0.03
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+
+    # draw a shape around each of the points
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.5)
+    poly.set_capstyle('round')
+    poly_new=copy(poly)
+    # add to dictionary of patches
+    patchdict[i]=poly_new
+
+# markers for legend
+marker1 = plt.Line2D([0], [0], markerfacecolor=(num,num,num),color='w', marker='o', label='No match to keywords',markersize=10,markeredgecolor='#404040')
+marker2= plt.Line2D([0], [0], marker='v', color='w', label='Unknown', markerfacecolor=(num,num,num), markersize=10, markeredgecolor='black')
+marker3=plt.Line2D([0], [0], marker='o', color='w', label='Keyword match', markerfacecolor=(0.8,0.5163076923076922,0.3999999999999999), markersize=10,markeredgecolor='#404040')
+
+# plot networx graph
+plt.figure(3,figsize=(10,10)) 
+nx.draw_networkx_nodes(Ge, pose, nodelist= hitnodes,node_size=50, node_shape= 'o', node_color=hitcols, edgecolors= '#404040',linewidths= 1)
+nx.draw_networkx_nodes(Ge,pose, nodelist= nothitnodes,node_size=50, node_shape= 'v', node_color=nothitcols, edgecolors= '#202020',linewidths= 1)
+nx.draw_networkx_edges(Ge, pose, alpha=0.5, width= edge_weighte_1, edge_color='#000000')
+for i in range(0,len(clustercoords)):
+    plt.gca().add_patch(patchdict[i])
+plt.legend(handles=[marker3,marker1,marker2])
+
+
+
+
+##########################################################################################
+#   Blast all vs all selected E value with subplots depending on clusters
+##########################################################################################
+
+# set working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/allvsall/all vs all blast final")
+
+# read in the blast data
+e=pd.read_csv('allvsall025true.csv',header="infer")
+fe=e[['Query-Seq ID','Subject-Seq ID','E Value']]
+
+# remove self hits
+fe = fe[fe['Query-Seq ID'] != fe['Subject-Seq ID']]
+
+# create networkx graph
+Ge = nx.from_pandas_edgelist(fe,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+# subset based on cluster size-largest cluster subsetted
+Gcc = sorted(nx.connected_components(Ge), key=len, reverse=True)
+D1 = Ge.subgraph(Gcc[0])
+D2 = Ge.subgraph(Gcc[1])
+D3 = Ge.subgraph(Gcc[2])
+D4 = Ge.subgraph(Gcc[3])
+D5 = Ge.subgraph(Gcc[4])
+D6 = Ge.subgraph(Gcc[5])
+D7 = Ge.subgraph(Gcc[6])
+Djoin1 = nx.compose(D1,D2)
+Djoin2 = nx.compose(D3,D4)
+Djoin3 = nx.compose(D5,D6)
+Djoin4 = nx.compose(D7,Djoin1)
+Djoin5 = nx.compose(Djoin2,Djoin3)
+Ge_big = nx.compose(Djoin4,Djoin5)
+
+
+# list of all the nodes in the large cluster subset
+bignodes=list(Ge_big.nodes)
+
+# define grey for colouring nodes
+num=128/255
+
+# create small cluster subset
+Ge_small= nx.from_pandas_edgelist(fe,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+nodeslist=list(Ge.nodes)
+for n in nodeslist:
+    if n in bignodes:
+        Ge_small.remove_node(n)
+
+# create a networkx position for the large and the small clusters
+pos_small=nx.spring_layout(Ge_small, iterations=75,k=0.1)
+pos_big=nx.spring_layout(Ge_big, iterations=150,k=0.1)
+
+# ammend edge weighting to reflect e value for large subset
+edge_weight_big=nx.get_edge_attributes(Ge_big, 'E Value')
+for k,v in edge_weight_big.items():
+    y=(v+1)**-1
+    edge_weight_big[k]=y
+max1=max(edge_weight_big.values())
+min1=min(edge_weight_big.values())
+for k,v in edge_weight_big.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weight_big[k]=y
+edge_weight_big=list(edge_weight_big.values())
+
+# ammend edge weighting to reflect e value for small subset
+edge_weight_small=nx.get_edge_attributes(Ge_small, 'E Value')
+for k,v in edge_weight_small.items():
+    y=(v+1)**-1
+    edge_weight_small[k]=y
+max1=max(edge_weight_small.values())
+min1=min(edge_weight_small.values())
+for k,v in edge_weight_small.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weight_small[k]=y
+edge_weight_small=list(edge_weight_small.values())
+
+# label unhit nodes as grey
+hitsallvall={}
+for node in Ge:
+     if node in hits21:
+         hitsallvall[node]=hits21[node]
+     else:
+         hitsallvall[node]=(num,num,num)
+
+# identify the nodes which are unknown
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+trueunknown={}
+known={}
+for k, v in hitsallvall.items():
+    if k in hitstargetlist:
+        known[k]=v
+    else:
+        trueunknown[k]=v
+
+# list of true unknown proteins
+trueunknownlist=list(trueunknown.keys())
+
+# seperate the nodes that hit and the nodes that don't hit keywords
+colourednode={}
+greynode1={}
+for k,v in hitsallvall.items():
+    if v == (num,num,num):
+        greynode1[k]=v
+    else:
+        colourednode[k]=v
+
+# seperate the known but not keyword-hits from the true unknown
+greynode={}
+for k, v in greynode1.items():
+    if k in trueunknownlist:
+        pass
+    else:
+        greynode[k]=v
+
+# susbet known but not keywords to subplots
+greynode_big={}
+greynode_small={}
+for k,v in greynode.items():
+    if k in bignodes:
+        greynode_big[k]=v
+    else:
+        greynode_small[k]=v
+
+# susbet known and hit to keywords to subplots
+colnode_big={}
+colnode_small={}
+for k,v in colourednode.items():
+    if k in bignodes:
+        colnode_big[k]=v
+    else:
+        colnode_small[k]=v
+
+# susbet unknown to subplots
+unknownnode_big={}
+unknownnode_small={}
+for k,v in trueunknown.items():
+    if k in bignodes:
+        unknownnode_big[k]=v
+    else:
+        unknownnode_small[k]=v
+
+# create lists for plots
+greynodeslist_big=list(greynode_big.keys())
+colourednodeslist_big=list(colnode_big.keys())
+trueunknownlist_big=list(unknownnode_big.keys())
+colknowngrey_big=list(greynode_big.values())
+colknowncol_big=list(colnode_big.values())
+colunknown_big=list(unknownnode_big.values())
+greynodeslist_small=list(greynode_small.keys())
+colourednodeslist_small=list(colnode_small.keys())
+trueunknownlist_small=list(unknownnode_small.keys())
+colknowngrey_small=list(greynode_small.values())
+colknowncol_small=list(colnode_small.values())
+colunknown_small=list(unknownnode_small.values())
+
+# identify clusters in dataset
+partitione = community_louvain.best_partition(Ge)
+
+# assign each cluster a colour
+colourse=list(partitione.values())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+
+# assign each cluster a unique number
+clusters_ID=list(partitione.values())
+clusters_ID=list(set(colourse))
+clusters_dict={}
+for i in clusters_ID:
+    clusters_dict[i] = [k for k in partitione.keys() if partitione[k] == i]
+
+# remove clusters of size 1 or 0
+d1={}
+for k,v in clusters_dict.items():
+    if len(v)<2:
+        pass
+    else:
+        d1[k]=v
+
+# reset unique identifier so none missing
+values=list(d1.values())
+d2={}    
+for i in range(0,len(d1)):
+    d2[i]=values[i]
+
+
+
+
+
+
+
+
+
+
+#create a dictionary of cluster inforation to change alpha values depending on cluster contents
+# list of proteins that are hit
+hitproteins=list(full_info.keys())
+
+#list of proteins that are knwon but not hit
+nothitlist=list(merged.Target)
+
+# extract hit information for keywords for each cluster
+linclust_cluster_information={}
+for k,v in clusters_dict.items():
+    linclust_cluster_information[k]={}
+    for x in range(0,len(v)):
+        protein=v[x]
+        linclust_cluster_information[k][protein]={}
+        for k1,v1 in full_info.items():
+            if protein in hitproteins:
+                if protein ==k1:
+                    linclust_cluster_information[k][protein]['keyword']=v1
+            if protein not in hitproteins:
+                if protein in nothitlist: 
+                    for k2,v2 in merged_dict.items():
+                        if protein==v2['Target']:
+                            linclust_cluster_information[k][protein]['no keyword']=v2
+            if protein not in hitproteins + nothitlist:
+                linclust_cluster_information[k][protein]['true unknown']=protein
+
+# subset proteins that are in a cluster that contains either a CAZy hit or a true unknown
+higher_alpha_clusters=[]
+for k, v in linclust_cluster_information.items():
+    for k1, v1 in v.items():
+        for k2,v2 in v1.items():
+            if k2=='true unknown':
+                higher_alpha_clusters.append(k)
+            if k2=='keyword':
+                higher_alpha_clusters.append(k)
+higher_alpha_clusters=set(higher_alpha_clusters)
+higher_alpha_proteins=[]
+for k,v in linclust_cluster_information.items():
+    for k1,v1 in v.items():
+        if k in higher_alpha_clusters:
+            higher_alpha_proteins.append(k1)
+
+
+
+
+
+
+# seperate cluster colors into the two subplots
+d2_big={}
+d2_small={}
+for k,v in d2.items():
+    if all(item in bignodes for item in v):
+        d2_big[k]=v
+    else:
+        d2_small[k]=v
+
+# reset identifying numbers for each of the two subplots, keeping cluster identifier
+values=list(d2_big.values())
+clusters_big=list(d2_big.keys())
+d2_big_2={}    
+for i in range(0,len(d2_big)):
+    d2_big_2[i]={}
+    d2_big_2[i]['proteins']=values[i]
+    d2_big_2[i]['cluster']=clusters_big[i]
+
+values=list(d2_small.values())
+d2_small_2={}  
+clusters_small=list(d2_small.keys())  
+for i in range(0,len(d2_small)):
+    d2_small_2[i]={}
+    d2_small_2[i]['proteins']=values[i]
+    d2_small_2[i]['cluster']=clusters_small[i]
+
+# identify coordinates for all points in the clusters for the large and small subplots
+clustercoords_big={}
+for k,v in d2_big_2.items():
+    l=[]
+    for k1,v1 in pos_big.items():
+        for x in range(0,len(v['proteins'])):
+            if v['proteins'][x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_big[k]={}
+    clustercoords_big[k]['coords']=l
+    clustercoords_big[k]['cluster']=v['cluster']
+    
+clustercoords_small={}
+for k,v in d2_small_2.items():
+    l=[]
+    for k1,v1 in pos_small.items():
+        for x in range(0,len(v['proteins'])):
+            if v['proteins'][x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_small[k]={}
+    clustercoords_small[k]['coords']=l
+    clustercoords_small[k]['cluster']=v['cluster']
+
+# assign each cluster a colour for big
+colourse_big=list(clustercoords_big.keys())
+colourse_big=list(set(colourse_big))
+colourse_big=pd.DataFrame(colourse_big,columns=['number'])
+len2=len(colourse_big)
+colourse_big['colour']=sns.hls_palette(len2,s=0.5)
+colourse_big=dict(zip(colourse_big.number,colourse_big.colour))
+
+
+
+# create a dictionary of shapes to shade each of the clusters on the large subplot
+patchdict_big={}
+for i in range(0,len(clustercoords_big)):
+    # for each cluster extract the coordinates
+    points1=clustercoords_big[i]['coords']
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+    
+# create a subset of points in a circle around each point in the cluster, r is distance of 
+# new points from each of the defined points (larger is bigger width of shape)
+    circlecoords=[]
+    r=0.05
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+#put the new points in a dataframe
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+
+# draw a shape around each of the points        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse_big[i]
+    if clustercoords_big[i]['cluster'] in higher_alpha_clusters:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.65)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_big[i]=poly_new
+    else:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.25)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_big[i]=poly_new
+    
+    
+# repeat for the small subplot
+patchdict_small={}
+for i in range(0,len(clustercoords_small)):
+    points1=clustercoords_small[i]['coords']
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    circlecoords=[]
+    r=0.04
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+        
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    if clustercoords_small[i]['cluster'] in higher_alpha_clusters:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.65)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_small[i]=poly_new
+    else:
+        poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.25)
+        poly.set_capstyle('round')
+        poly_new=copy(poly)
+        patchdict_small[i]=poly_new
+
+
+# divide the known non-hit proteins to those in a cluster of interest and those not, for big and small subplot
+greynodeslist_big_highalpha=[]
+greynodeslist_big_lowalpha=[]
+for i in greynodeslist_big:
+    if i in higher_alpha_proteins:
+        greynodeslist_big_highalpha.append(i)
+    else:
+        greynodeslist_big_lowalpha.append(i)
+colknowngrey_big_highalpha=[]
+colknowngrey_big_lowalpha=[]
+for i in greynodeslist_big:
+    if i in higher_alpha_proteins:
+        colknowngrey_big_highalpha=[].append(i)
+    else:
+        colknowngrey_big_lowalpha=[].append(i)
+greynodeslist_small_highalpha=[]
+greynodeslist_small_lowalpha=[]
+for i in greynodeslist_small:
+    if i in higher_alpha_proteins:
+        greynodeslist_small_highalpha.append(i)
+    else:
+        greynodeslist_small_lowalpha.append(i)
+colknowngrey_small_highalpha=[]
+colknowngrey_small_lowalpha=[]
+for i in greynodeslist_small:
+    if i in higher_alpha_proteins:
+        colknowngrey_small_highalpha=[].append(i)
+    else:
+        colknowngrey_small_lowalpha=[].append(i)
+
+
+
+# create markers for plot legend
+marker1 = plt.Line2D([0], [0], markerfacecolor='White',color='w', marker='o', label='Known non-CAZy',markersize=10,markeredgecolor='#606060')
+marker2= plt.Line2D([0], [0], marker='v', color='w', label='True Unknown', markerfacecolor='#404040', markersize=10, markeredgecolor='black')
+marker3=plt.Line2D([0], [0], marker='o', color='w', label='CAZY', markerfacecolor=(0.8,0.5163076923076922,0.3999999999999999), markersize=10,markeredgecolor='#404040')
+
+# plot the networkx graph
+fig, axes = plt.subplots(nrows=1, ncols=2,figsize=(20,10))
+ax = axes.flatten()
+ax[0].set_axis_off()
+nx.draw_networkx_nodes(Ge_big, pos_big, nodelist= greynodeslist_big_highalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.8)
+nx.draw_networkx_nodes(Ge_big, pos_big, nodelist= greynodeslist_big_lowalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.6)
+nx.draw_networkx_nodes(Ge_big, pos_big, nodelist= trueunknownlist_big,node_size=75, node_shape= 'v', node_color='#505050', edgecolors= '#303030',linewidths= 1.5,ax=ax[0],alpha=0.8)
+nx.draw_networkx_nodes(Ge_big, pos_big, nodelist= colourednodeslist_big,node_size=75, node_shape= 'o', node_color=colknowncol_big, edgecolors= '#303030',linewidths= 1.5,ax=ax[0],alpha=0.8)
+nx.draw_networkx_edges(Ge_big, pos_big, alpha=0.5, width= edge_weight_small,edge_color='#000000',ax=ax[0])
+ax[1].set_axis_off()
+nx.draw_networkx_nodes(Ge_small, pos_small, nodelist= greynodeslist_small_highalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_nodes(Ge_small, pos_small, nodelist= greynodeslist_small_lowalpha,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.6)
+nx.draw_networkx_nodes(Ge_small, pos_small, nodelist= trueunknownlist_small,node_size=75, node_shape= 'v', node_color='#505050', edgecolors= '#303030',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_nodes(Ge_small, pos_small, nodelist= colourednodeslist_small,node_size=75, node_shape= 'o', node_color=colknowncol_small, edgecolors= '#303030',linewidths= 1.5,ax=ax[1],alpha=0.8)
+nx.draw_networkx_edges(Ge_small, pos_small, alpha=0.5, width= edge_weight_small, edge_color='#000000',ax=ax[1])
+plt.legend(handles=[marker3,marker1,marker2], loc=0)
+for i in range(0,len(clustercoords_big)):
+    axes[0].add_patch(patchdict_big[i])
+for i in range(0,len(clustercoords_small)):
+    axes[1].add_patch(patchdict_small[i])
+
+
+##########################################################################################
+#   protein information for each cluster
+##########################################################################################
+
+# list of proteins that are hit
+hitproteins=list(full_info.keys())
+
+#list of proteins that are knwon but not hit
+nothitlist=list(merged.Target)
+
+# extract hit information for keywords for each cluster
+blast_cluster_information={}
+for k,v in clusters_dict.items():
+    blast_cluster_information[k]={}
+    for x in range(0,len(v)):
+        protein=v[x]
+        blast_cluster_information[k][protein]={}
+        for k1,v1 in full_info.items():
+            if protein in hitproteins:
+                if protein ==k1:
+                    blast_cluster_information[k][protein]['keyword']=v1
+            if protein not in hitproteins:
+                if protein in nothitlist: 
+                    for k2,v2 in merged_dict.items():
+                        if protein==v2['Target']:
+                            blast_cluster_information[k][protein]['no keyword']=v2
+            if protein not in hitproteins + nothitlist:
+                blast_cluster_information[k][protein]['true unknown']=protein
+
+ 
+#transform into dictionary ready to be converted to pandas
+blast_cluster_information2={}
+for k,v in blast_cluster_information.items():
+    for k1,v1 in v.items():
+        blast_cluster_information2[k1]={}
+        blast_cluster_information2[k1]['cluster']=k
+        for k2,v2 in v1.items():
+            if k2=='keyword':
+                blast_cluster_information2[k1]['hit type']=k2
+                for k3,v3 in v2.items():
+                    blast_cluster_information2[k1]['keyword hit']=v3['keyword']
+                    blast_cluster_information2[k1]['description']=v3['description']
+            else:
+                blast_cluster_information2[k1]['hit type']=k2
+                blast_cluster_information2[k1]['keyword hit']='n/a'
+                blast_cluster_information2[k1]['description']='n/a'
+            
+
+# save as pandas
+blast_pandas=pd.DataFrame.from_dict(blast_cluster_information2, orient='index')
+
+#save as csv
+blast_pandas.to_csv('blast_cluster_information.csv', index=True)
+
+
+##########################################################################################
+#   Blast all vs all selected E value with subplots colouring one keyword
+##########################################################################################
+
+# set working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/allvsall/allvall2")
+
+
+# read in the blast data
+e=pd.read_csv('allvsall1true.csv',header="infer")
+fe=e[['Query-Seq ID','Subject-Seq ID','E Value']]
+
+# remove self hits
+fe = fe[fe['Query-Seq ID'] != fe['Subject-Seq ID']]
+
+# create networkx graph
+Ge = nx.from_pandas_edgelist(fe,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+# subset based on cluster size-largest cluster subsetted
+Gcc = sorted(nx.connected_components(Ge), key=len, reverse=True)
+Ge_big = Ge.subgraph(Gcc[0])
+
+# list of all the nodes in the large cluster subset
+bignodes=list(Ge_big.nodes)
+
+# create small cluster subset
+Ge_small= nx.from_pandas_edgelist(fe,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+nodeslist=list(Ge.nodes)
+for n in nodeslist:
+    if n in bignodes:
+        Ge_small.remove_node(n)
+
+# create a networkx position for the large and the small clusters
+pos_small=nx.spring_layout(Ge_small, iterations=75,k=0.1)
+pos_big=nx.spring_layout(Ge_big, iterations=200,k=0.1)
+
+# ammend edge weighting to reflect e value for large subset
+edge_weight_big=nx.get_edge_attributes(D_big, 'Sequence identity')
+for k,v in edge_weight_big.items():
+    y=(v+1)**-1
+    edge_weight_big[k]=y
+max1=max(edge_weight_big.values())
+min1=min(edge_weight_big.values())
+for k,v in edge_weight_big.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weight_big[k]=y
+edge_weight_big=list(edge_weight_big.values())
+
+# ammend edge weighting to reflect e value for small subset
+edge_weight_small=nx.get_edge_attributes(D_small, 'Sequence identity')
+for k,v in edge_weight_small.items():
+    y=(v+1)**-1
+    edge_weight_small[k]=y
+max1=max(edge_weight_small.values())
+min1=min(edge_weight_small.values())
+for k,v in edge_weight_small.items():
+    y=((5-2)*(v-min1)/(max1-min1))+2
+    edge_weight_small[k]=y
+edge_weight_small=list(edge_weight_small.values())
+
+# isolate only the nodes with the keywords
+hits_keyword=[]
+for k,v in hitsallordered.items():
+    if v=='chitin':
+        hits_keyword.append(k)
+
+
+# label unhit nodes as grey
+hitsallvall={}
+for node in Ge:
+     if node in hits_keyword:
+         hitsallvall[node]=hits21[node]
+     else:
+         hitsallvall[node]=(num,num,num)
+
+# identify the nodes which are unknown
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+trueunknown={}
+known={}
+for k, v in hitsallvall.items():
+    if k in hitstargetlist:
+        known[k]=v
+    else:
+        trueunknown[k]=v
+
+# list of true unknown proteins
+trueunknownlist=list(trueunknown.keys())
+
+# seperate the nodes that hit and the nodes that don't hit keywords
+colourednode={}
+greynode1={}
+for k,v in hitsallvall.items():
+    if v == (num,num,num):
+        greynode1[k]=v
+    else:
+        colourednode[k]=v
+
+# seperate the known but not keyword-hits from the true unknown
+greynode={}
+for k, v in greynode1.items():
+    if k in trueunknownlist:
+        pass
+    else:
+        greynode[k]=v
+
+# susbet known but not keywords to subplots
+greynode_big={}
+greynode_small={}
+for k,v in greynode.items():
+    if k in bignodes:
+        greynode_big[k]=v
+    else:
+        greynode_small[k]=v
+
+# susbet known and hit to keywords to subplots
+colnode_big={}
+colnode_small={}
+for k,v in colourednode.items():
+    if k in bignodes:
+        colnode_big[k]=v
+    else:
+        colnode_small[k]=v
+
+# susbet unknown to subplots
+unknownnode_big={}
+unknownnode_small={}
+for k,v in trueunknown.items():
+    if k in bignodes:
+        unknownnode_big[k]=v
+    else:
+        unknownnode_small[k]=v
+
+# create lists for plots
+greynodeslist_big=list(greynode_big.keys())
+colourednodeslist_big=list(colnode_big.keys())
+trueunknownlist_big=list(unknownnode_big.keys())
+colknowngrey_big=list(greynode_big.values())
+colknowncol_big=list(colnode_big.values())
+colunknown_big=list(unknownnode_big.values())
+greynodeslist_small=list(greynode_small.keys())
+colourednodeslist_small=list(colnode_small.keys())
+trueunknownlist_small=list(unknownnode_small.keys())
+colknowngrey_small=list(greynode_small.values())
+colknowncol_small=list(colnode_small.values())
+colunknown_small=list(unknownnode_small.values())
+
+# identify clusters in dataset
+partitione = community_louvain.best_partition(Ge)
+
+# assign each cluster a colour
+colourse=list(partitione.values())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+# assign each cluster a unique number
+clusters_ID=list(partitione.values())
+clusters_ID=list(set(colourse))
+d={}
+for i in clusters_ID:
+    d[i] = [k for k in partitione.keys() if partitione[k] == i]
+
+# remove clusters of size 1 or 0
+d1={}
+for k,v in d.items():
+    if len(v)<2:
+        pass
+    else:
+        d1[k]=v
+
+# reset unique identifier so none missing
+values=list(d1.values())
+d2={}    
+for i in range(0,len(d1)):
+    d2[i]=values[i]
+
+# subset clusters into the subplots
+bignodes=list(Ge_big.nodes)
+d2_big={}
+d2_small={}
+for k,v in d2.items():
+    if all(item in bignodes for item in v):
+        d2_big[k]=v
+    else:
+        d2_small[k]=v
+
+# reset the identifier so none missing for each subplot
+values=list(d2_big.values())
+d2_big_2={}    
+for i in range(0,len(d2_big)):
+    d2_big_2[i]=values[i]
+values=list(d2_small.values())
+d2_small_2={}    
+for i in range(0,len(d2_small)):
+    d2_small_2[i]=values[i]
+
+# subset the cluster coordinates for each cluster for big subset
+clustercoords_big={}
+for k,v in d2_big_2.items():
+    l=[]
+    for k1,v1 in pos_big.items():
+        for x in range(0,len(v)):
+            if v[x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_big[k]=l
+
+# subset the cluster coordinates for each cluster for small subset
+clustercoords_small={}
+for k,v in d2_small_2.items():
+    l=[]
+    for k1,v1 in pos_small.items():
+        for x in range(0,len(v)):
+            if v[x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords_small[k]=l
+
+# assign each cluster a colour
+colourse=list(clustercoords_big.keys())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+# create a shaded shape around each of the clusters in the large subset
+patchdict_big={}
+for i in range(0,len(clustercoords_big)):
+    # extract coordinates for each cluster
+    points1=clustercoords_big[i]
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    # plot a circle around each of the points
+    circlecoords=[]
+    r=0.01
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+    # save new points 
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+    
+    # create a shaded shape around the points
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    # set colour of the shape
+    color = colourse[i]
+    poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.5)
+    poly.set_capstyle('round')
+    poly_new=copy(poly)
+    patchdict_big[i]=poly_new
+
+# assign each cluster a colour
+colourse=list(clustercoords_small.keys())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+
+# create a shaded shape around each of the clusters in the small subset
+patchdict_small={}
+for i in range(0,len(clustercoords_small)):
+    # etract points for each cluster
+    points1=clustercoords_small[i]
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    # plot a circle around points for each point in cluster
+    circlecoords=[]
+    r=0.05
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+        
+    # save points
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+    
+    # create coloured shape around  points
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())  
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    # colour the shape
+    color = colourse[i]
+    poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.5)
+    poly.set_capstyle('round')
+    poly_new=copy(poly)
+    patchdict_small[i]=poly_new
+
+# create markers for plot legend
+marker1 = plt.Line2D([0], [0], markerfacecolor='White',color='w', marker='o', label='non-CAZY Protein',markersize=10,markeredgecolor='#606060')
+marker2= plt.Line2D([0], [0], marker='v', color='w', label='Unknown Protein', markerfacecolor='#404040', markersize=10, markeredgecolor='black')
+marker3=plt.Line2D([0], [0], marker='o', color='w', label='Chitin Protein', markerfacecolor=(0.8,0.5163076923076922,0.3999999999999999), markersize=10,markeredgecolor='#404040')
+
+# plot the networkx graph
+fig, axes = plt.subplots(nrows=1, ncols=2,figsize=(20,10))
+ax = axes.flatten()
+ax[0].set_axis_off()
+nx.draw_networkx_nodes(Ge_big, pos_big, nodelist= greynodeslist_big,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[0] ,alpha=0.7)
+nx.draw_networkx_nodes(Ge_big, pos_big, nodelist= trueunknownlist_big,node_size=75, node_shape= 'v', node_color='#404040', edgecolors= '#000000',linewidths= 1.5,ax=ax[0],alpha=0.7)
+nx.draw_networkx_nodes(Ge_big, pos_big, nodelist= colourednodeslist_big,node_size=75, node_shape= 'o', node_color='Red', edgecolors= '#606060',linewidths= 1.5,ax=ax[0],alpha=1)
+nx.draw_networkx_edges(Ge_big, pos_big, alpha=0.5, edge_color='#000000',ax=ax[0])
+ax[1].set_axis_off()
+nx.draw_networkx_nodes(Ge_small, pos_small, nodelist= greynodeslist_small,node_size=75, node_shape= 'o', node_color='White', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=0.7)
+nx.draw_networkx_nodes(Ge_small, pos_small, nodelist= trueunknownlist_small,node_size=75, node_shape= 'v', node_color='#404040', edgecolors= '#000000',linewidths= 1.5,ax=ax[1],alpha=0.7)
+nx.draw_networkx_nodes(Ge_small, pos_small, nodelist= colourednodeslist_small,node_size=75, node_shape= 'o', node_color='Red', edgecolors= '#606060',linewidths= 1.5,ax=ax[1],alpha=1)
+nx.draw_networkx_edges(Ge_small, pos_small, alpha=0.5, width= edge_weightlin_small, edge_color='#000000',ax=ax[1])
+plt.legend(handles=[marker3,marker1,marker2], loc=0)
+for i in range(0,len(clustercoords_big)):
+    axes[0].add_patch(patchdict_big[i])
+for i in range(0,len(clustercoords_small)):
+    axes[1].add_patch(patchdict_small[i])
+
+##########################################################################################
+#   Break down the larger blast cluster 
+##########################################################################################
+
+# set working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/allvsall/all vs all blast final")
+
+# load in the data
+e=pd.read_csv('allvsall025true.csv',header="infer")
+fe=e[['Query-Seq ID','Subject-Seq ID','E Value']]
+
+# load in the list of proteins in cluster 
+cluster1=pd.read_csv('cluster74.csv',header=None)
+cluster1.columns=['protein']
+cluster1=list(cluster1.protein)
+
+# subset only proteins in this cluster
+fe1=fe[fe['Query-Seq ID'].isin(cluster1)]
+fe1=fe1[fe1['Subject-Seq ID'].isin(cluster1)]
+
+Ge = nx.from_pandas_edgelist(fe1,target="Query-Seq ID",source="Subject-Seq ID",edge_attr="E Value")
+
+# manipulate edges so smaller evalues create thicker lines
+listedgese = dict(Ge.edges)
+edge_weighte=nx.get_edge_attributes(Ge, 'E Value')
+for k,v in edge_weighte.items():
+    y=(v+1)**-1
+    edge_weighte[k]=y
+max1=max(edge_weighte.values())
+min1=min(edge_weighte.values())
+for k,v in edge_weighte.items():
+    y=((3.8-0.5)*(v-min1)/(max1-min1))+0.5
+    edge_weighte[k]=y
+edge_weighte_1=list(edge_weighte.values())
+
+# set colour for grey nodes
+num=128/255
+
+# colour hit nodes, all others grey
+hitsallvall={}
+for node in Ge:
+     if node in hits21:
+         hitsallvall[node]=hits21[node]
+     else:
+         hitsallvall[node]=(num,num,num)
+
+# create a list of all proteins that are hit against (any hit, not just keywords)
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+
+# identify which nodes are completely unknown in dataset (not hit)
+trueunknown={}
+for k, v in hitsallvall.items():
+    if k in hitstargetlist:
+        pass
+    else:
+        trueunknown[k]=v
+        
+trueunknownlist=list(trueunknown.keys())
+
+# identify which nodes hit the keywords, and those that are known but don't hit a keyword
+colourednode={}
+greynode1={}
+for k,v in hitsallvall.items():
+    if v == (num,num,num):
+        greynode1[k]=v
+    else:
+        colourednode[k]=v
+
+# remove the true unknowns from the known but not hitting keyword data
+greynode={}
+for k, v in greynode1.items():
+    if k in trueunknownlist:
+        pass
+    else:
+        greynode[k]=v
+
+
+# create lists of all parameters for plotting
+greynodeslist=list(greynode.keys())
+colourednodeslist=list(colourednode.keys())
+colknowngrey=list(greynode.values())
+colknowncol=list(colourednode.values())
+
+# calculate networkx position information
+pose=nx.spring_layout(Ge,iterations=300,k=0.1)
+
+# identify the nodes which are unknown
+hitstargetlist=list(merged['Target'])
+hitstargetlist=list(set(hitstargetlist))
+trueunknown={}
+known={}
+for k, v in hitsallvall.items():
+    if k in hitstargetlist:
+        known[k]=v
+    else:
+        trueunknown[k]=v
+
+
+# create lists for plotting of colour and node lists
+hitnodes=list(known.keys())
+nothitnodes=list(trueunknown.keys())
+hitcols=list(known.values())
+nothitcols=list(trueunknown.values())
+
+# identify clusters in plot
+partitione = community_louvain.best_partition(Ge)
+
+# give each cluster a unique colour
+colourse=list(partitione.values())
+colourse=list(set(colourse))
+colourse=pd.DataFrame(colourse,columns=['number'])
+len2=len(colourse)
+colourse['colour']=sns.hls_palette(len2,s=0.5)
+colourse=dict(zip(colourse.number,colourse.colour))
+
+# list of colours
+clusters_ID=list(partitione.values())
+clusters_ID=list(set(colourse))
+
+
+# assign each cluster a unique number
+clusters_ID=list(partitione.values())
+clusters_ID=list(set(colourse))
+clusters_dict={}
+for i in clusters_ID:
+    clusters_dict[i] = [k for k in partitione.keys() if partitione[k] == i]
+
+
+# create a dictionary so clusters now under keys of unique identifiers
+d={}
+for i in clusters_ID:
+    d[i] = [k for k in partitione.keys() if partitione[k] == i]
+
+# remove clusters of length 1
+d1={}
+for k,v in d.items():
+    if len(v)<2:
+        pass
+    else:
+        d1[k]=v
+
+# reset identifier number so none missing
+values=list(d1.values())
+d2={}    
+for i in range(0,len(d1)):
+    d2[i]=values[i]
+
+# subset the coordinates of each cluster into list           
+clustercoords={}
+for k,v in d2.items():
+    l=[]
+    for k1,v1 in pose.items():
+        for x in range(0,len(v)):
+            if v[x]==k1:
+                temp=(v1[0],v1[1])
+                l.append(temp)
+    clustercoords[k]=l
+            
+# create a shaded shape around each of the clusters
+patchdict={}
+for i in range(0,len(clustercoords)):
+    # extract the points for each cluster
+    points1=clustercoords[i]
+    points2=pd.DataFrame(points1,columns=['x','y'])
+    points4=points2.to_numpy()
+    points2['number']=points2.index
+    points3=points2.set_index('number').to_dict('index')
+
+    # draw a circle of points around each point in the cluster
+    circlecoords=[]
+    r=0.03
+    for k,v in points3.items():
+        x1=v['x']
+        y1=v['y']
+        for n in range(1,100):
+            angle=((2*math.pi)/100)*n
+            xcord=(x1+r*math.cos(angle))
+            ycord=(y1+r*math.sin(angle))
+            jointcoords=(xcord,ycord)
+            circlecoords.append(jointcoords)
+    points=pd.DataFrame(circlecoords,columns=['x','y'])
+
+    # draw a shape around each of the points
+    points=points.to_numpy()
+    hull = ConvexHull(points)
+    cent = np.mean(points, 0)
+    pts = []
+    for pt in points[hull.simplices]:
+        pts.append(pt[0].tolist())
+        pts.append(pt[1].tolist())
+    pts.sort(key=lambda p: np.arctan2(p[1] - cent[1], p[0] - cent[0]))
+    pts = pts[0::2] 
+    pts.insert(len(pts), pts[0])
+    k = 1.1
+    color = colourse[i]
+    poly = Polygon(k*(np.array(pts)- cent) + cent, facecolor=color, alpha=0.5)
+    poly.set_capstyle('round')
+    poly_new=copy(poly)
+    # add to dictionary of patches
+    patchdict[i]=poly_new
+
+# markers for legend
+marker1 = plt.Line2D([0], [0], markerfacecolor=(num,num,num),color='w', marker='o', label='No match to keywords',markersize=10,markeredgecolor='#404040')
+marker2= plt.Line2D([0], [0], marker='v', color='w', label='Unknown', markerfacecolor=(num,num,num), markersize=10, markeredgecolor='black')
+marker3=plt.Line2D([0], [0], marker='o', color='w', label='Keyword match', markerfacecolor=(0.8,0.5163076923076922,0.3999999999999999), markersize=10,markeredgecolor='#404040')
+
+# plot networx graph
+plt.figure(3,figsize=(10,10)) 
+nx.draw_networkx_nodes(Ge, pose, nodelist= greynodeslist,node_size=90, node_shape= 'o', node_color="white", edgecolors= '#606060',linewidths= 1, alpha=0.9)
+nx.draw_networkx_nodes(Ge, pose, nodelist= colourednodeslist,node_size=90, node_shape= 'o', node_color=colknowncol, edgecolors= '#606060',linewidths= 1,alpha=1)
+nx.draw_networkx_nodes(Ge,pose, nodelist= nothitnodes,node_size=100, node_shape= 'v', node_color="#404040", edgecolors= '#000000',linewidths= 1,alpha=1)
+nx.draw_networkx_edges(Ge, pose, alpha=0.5, width= edge_weighte_1, edge_color='#000000')
+for i in range(0,len(clustercoords)):
+    plt.gca().add_patch(patchdict[i])
+plt.legend(handles=[marker3,marker1,marker2])
+
+
+##########################################################################################
+#   Save cluster ineformation for cluster 
+##########################################################################################
+
+
+# list of proteins that are hit
+hitproteins=list(full_info.keys())
+
+#list of proteins that are knwon but not hit
+nothitlist=list(merged.Target)
+
+# extract hit information for keywords for each cluster
+blast_cluster_information={}
+for k,v in clusters_dict.items():
+    blast_cluster_information[k]={}
+    for x in range(0,len(v)):
+        protein=v[x]
+        blast_cluster_information[k][protein]={}
+        for k1,v1 in full_info.items():
+            if protein in hitproteins:
+                if protein ==k1:
+                    blast_cluster_information[k][protein]['keyword']=v1
+            if protein not in hitproteins:
+                if protein in nothitlist: 
+                    for k2,v2 in merged_dict.items():
+                        if protein==v2['Target']:
+                            blast_cluster_information[k][protein]['no keyword']=v2
+            if protein not in hitproteins + nothitlist:
+                blast_cluster_information[k][protein]['true unknown']=protein
+
+ 
+#transform into dictionary ready to be converted to pandas
+blast_cluster_information2={}
+for k,v in blast_cluster_information.items():
+    for k1,v1 in v.items():
+        blast_cluster_information2[k1]={}
+        blast_cluster_information2[k1]['cluster']=k
+        for k2,v2 in v1.items():
+            if k2=='keyword':
+                blast_cluster_information2[k1]['hit type']=k2
+                for k3,v3 in v2.items():
+                    blast_cluster_information2[k1]['keyword hit']=v3['keyword']
+                    blast_cluster_information2[k1]['description']=v3['description']
+            else:
+                blast_cluster_information2[k1]['hit type']=k2
+                blast_cluster_information2[k1]['keyword hit']='n/a'
+                blast_cluster_information2[k1]['description']='n/a'
+            
+
+# save as pandas
+blast_pandas=pd.DataFrame.from_dict(blast_cluster_information2, orient='index')
+
+#save as csv
+blast_pandas.to_csv('cluster 73 information.csv', index=True)
+
+
+
+
+

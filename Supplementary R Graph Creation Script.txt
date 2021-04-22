@@ -1,0 +1,95 @@
+######################################################################################################################
+# CAZy proportions in metasecretome graphs
+######################################################################################################################
+
+# set working directory
+setwd("~/Uni/masters/Data/linclust/outputs/screen")
+
+# Install and load ggplot2
+library(ggplot2)
+library(tidyr)
+
+# Define Summary Function
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- rename(data_sum, c("mean" = varname))
+  return(data_sum)
+}
+
+# Load in the data
+Data2 <- read.csv("Data with 2 in.csv", header=T)
+
+# seperate out file names to be variables
+names(Data2) <- sub("^X", "", names(Data2))
+
+# compile cluster data to histogram like format
+Data2 <- gather(Data2,"cluster.size","number", 6:15)
+
+# set variables as factors
+Data2$percent.ID <- as.factor(Data2$percent.ID)
+Data2$kmer <- as.factor(Data2$kmer)
+Data2$k <- as.factor(Data2$k)
+
+# set 0 as n/a
+Data2[Data2 == 0] <- NA
+
+# set cluster size to numeric
+Data2$cluster.size <- as.numeric(Data2$cluster.size)
+
+# summaries the variables to get error bars
+Data2sumkmer <- data_summary(Data2, varname="average.cluster", 
+                             groupnames=c("kmer", "percent.ID"))
+Data2sumk <- data_summary(Data2, varname="average.cluster", 
+                          groupnames=c("k", "percent.ID"))
+
+# plot number of kmers
+
+# plot percent ID
+ggplot(Data2, aes(x=cluster.size,y=number, fill=percent.ID))+
+  geom_bar(position="dodge", stat="identity", color='black')+ 
+  theme_classic()+
+  scale_fill_manual(values=c("#da70d6", "#ffa07a", "#87ceeb","#ffff00"))+
+  xlab("Cluster Size")+
+  ylab("No. of members")+ 
+  guides(fill=guide_legend(title="Percent ID"))
+
+# plot kmer length
+ggplot(Data2, aes(x=cluster.size,y=number, fill=k))+
+  geom_bar(position="dodge", stat="identity", color='black')+ 
+  theme_classic()+
+  scale_fill_manual(values=c("#da70d6", "#ffa07a", "#87ceeb","#ffff00"))+
+  xlab("Cluster Size")+
+  ylab("No. of members")+ 
+  guides(fill=guide_legend(title="Kmer Length"))
+
+# plot number of kmers
+ggplot(Data2, aes(x=cluster.size,y=number, fill=kmer))+
+  geom_bar(position="dodge", stat="identity", color='black')+ 
+  theme_classic()+
+  scale_fill_manual(values=c("#da70d6", "#ffa07a", "#87ceeb","#ffff00",'#66cdaa'))+
+  xlab("Cluster Size")+
+  ylab("No. of members")+ 
+  guides(fill=guide_legend(title="No. of Kmers"))
+
+
+# load in perliminary screen data
+Data <- read.csv("data3.csv", header=T)
+
+# set data as factor
+Data$kmer=as.factor(Data$kmer)
+Data$cluster.size=as.factor(Data$cluster.size)
+
+# plot preliminary screen data
+ggplot(Data, aes(x=cluster.size,y=number, fill=kmer))+
+  geom_bar(position="dodge", stat="identity", color='black')+
+  theme_classic()+
+  scale_fill_manual(values=c("#da70d6", "#ffa07a", "#87ceeb","#ffff00"))+
+  xlab("Cluster Size")+
+  ylab("No. of members")+ 
+  guides(fill=guide_legend(title="No. of Kmers"))

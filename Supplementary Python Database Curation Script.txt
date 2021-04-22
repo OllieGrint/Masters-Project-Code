@@ -1,0 +1,404 @@
+##########################################################################################
+#   Database curation script
+##########################################################################################
+
+##########################################################################################
+#   Load in packages
+##########################################################################################
+
+from Bio import SeqIO
+import time
+import pandas as pd
+import seaborn as sns
+import os as os
+import json
+import csv
+
+##########################################################################################
+#   Split the master dataset into smaller ones to be run on databases
+##########################################################################################
+
+# Change to  directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data")
+
+# split master file into smaller ones
+count=0
+countk=0
+file_number_list=list(range(0,105))
+
+#sort of dynamic naming to write 750 sequences to a file, clear list
+split_by_x=10000
+delimiter='MASTER_ISDE_extracellular_and_outer_membrane_proteins_3534.fna'
+def write_to_file(input, filnum, relAA, relseq, totseq, totAA):
+    timestamp=(str(time.strftime("%H_%M_%S")))
+    f1=(str(delimiter) + str(count) + '_seqs_' + timestamp + '_BLOCK_' +str(filnum)+ '.fna')
+    f=open(f1, 'a')
+    SeqIO.write(input, f, 'fasta')
+    print('Written ' + str(relAA)+ ' AA in ' +str(relseq) + ' sequencs to ' + str(f1) + ': ' + str(totseq) +' total sequences written, ' +str(totAA) + ' Total AA written')
+    f.close()
+    
+split_by_x=10000
+file_count_dict={}
+for x in file_number_list:
+     file_count_dict[x]={}
+     file_count_dict[x]['limits']=[x*split_by_x, (x*split_by_x)+split_by_x]
+     file_count_dict[x]['seqs']=[]
+     file_count_dict[x]['total_amino_acids']=0
+     file_count_dict[x]['total_num_sequences']=0               
+
+seqsx={}
+targetx=[]
+#NB/ 100 seqs = ~ 100KBon the safe side
+file='MASTER_ISDE_extracellular_and_outer_membrane_proteins_3534.fna'
+filecount=0
+written_length=0
+for seq in SeqIO.parse(file, 'fasta'):
+    count+=1
+    seqsx[seq.id]=seq
+    written_length=written_length+len(seq)
+    ##determine what file to write in
+    for filenum in file_count_dict:
+        if written_length >= file_count_dict[filenum]['limits'][0] and written_length <=file_count_dict[filenum]['limits'][1]:
+            file_count_dict[filenum]['seqs'].append(seq)
+            file_count_dict[filenum]['total_amino_acids']+=len(seq)
+            file_count_dict[filenum]['total_num_sequences']+=1
+
+total_written=0       
+total_AA_written=0            
+for x in file_count_dict:
+    if not len(file_count_dict[x]['seqs'])==0:
+        total_written=total_written+file_count_dict[x]['total_num_sequences']
+        total_AA_written=total_AA_written+file_count_dict[x]['total_amino_acids']
+        write_to_file(file_count_dict[x]['seqs'], str(x), str(file_count_dict[x]['total_amino_acids']), file_count_dict[x]['total_num_sequences'], str(total_written), str(total_AA_written))
+
+
+
+##########################################################################################
+#   Process the NCBI database outputs
+##########################################################################################
+
+# set working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/NCBI results")
+
+# idetify which files will be processed
+filelist=list()
+for filename in os.listdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/NCBI results"):
+    if filename.endswith(".txt"): 
+         filelist.append(filename)
+
+# loop through file list, pulling out the needed information from each text file
+blast_dict={}
+for i in filelist:
+    file= i
+    f=open(file,'r')
+    all_lines_variable = f.readlines() 
+    numberlist = list()    
+    lookup="Query #"
+    file_name =open(file,'r')
+    for num, line in enumerate(file_name,1):
+        if lookup in line:
+            numberlist.append(num)
+
+    list.reverse(numberlist)       
+          
+    linenum=0
+    originalpos=0
+    while True:
+        linenum+=1
+        f.seek(originalpos)
+        line=f.readline().strip('\n')
+        originalpos=f.tell()
+        if line.startswith('Query #'):
+            OTU=line.split(' ', 3)[2]
+            blast_dict[OTU]={}
+            print(OTU)
+            headcount=0
+            for x in list(range(1,250)):
+                line=f.readline().strip('\n')
+                #read current position
+                currentpos=f.tell()
+                line2=f.readline().strip('\n')
+                #return to previous position to not offset line reads if uneven numbers (e.g. line1 not containing > or skipping query)
+                f.seek(currentpos)
+                if line.startswith('Query #'):
+                    break
+                if line.startswith('>'):
+                    headcount+=1
+                    print(line, line2, headcount)
+                    if 'Hit_'+str(headcount) not in blast_dict[OTU]:
+                        blast_dict[OTU]['Hit_'+str(headcount)]={}
+                    blast_dict[OTU]['Hit_'+str(headcount)]['Description']=line
+                    blast_dict[OTU]['Hit_'+str(headcount)]['Accession']=line2.split(':')[1].split(' ')[1]
+                    for y in list(range(1,20)):
+                        line3=f.readline().strip('\n')
+                        if line3.startswith('Score:'):
+                            blast_dict[OTU]['Hit_'+str(headcount)]['E value']=line3.split(':')[2]
+        if line == '' and linenum >= numberlist[0]:
+            print('end',OTU, line)
+            break
+    f.close()
+    numberlist.clear()
+
+# convert to pandas
+df = pd.DataFrame.from_dict({(i,j): blast_dict[i][j] 
+                           for i in blast_dict.keys() 
+                           for j in blast_dict[i].keys()},
+                       orient='index')
+
+# save output as csv
+df.to_csv('NCBI.csv', index=True)
+
+
+
+##########################################################################################
+#   Process the pfam database outputs
+##########################################################################################
+
+# set working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/Pfam")
+
+# identify files to be processed
+filelist=list()
+for filename in os.listdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/pfam"):
+    if filename.endswith(".txt"): 
+         filelist.append(filename)
+
+# extract necesary nformation 
+data={}
+for i in filelist:
+    file= i
+    data1 = open(file)
+    data2= json.load(data1)
+    for d in data2:
+        Description = d.get('desc')
+        Evalue = d.get('evalue')
+        Accession = d.get('acc')
+        data3 = d.get('seq')
+        ProteinID =data3.get('name')
+        data[ProteinID]={}
+        data[ProteinID]['Description']=Description
+        data[ProteinID]['E value']=Evalue
+        data[ProteinID]['Accession']=Accession
+        
+# save to csv 
+fields = [ 'Protein ID', 'Description', 'E value', 'Accession']
+with open("pfam.csv", "w") as f:
+    w = csv.DictWriter(f, fields, delimiter=',', lineterminator='\n')
+    w.writeheader()
+    for k in data:
+        w.writerow({field: data[k].get(field) or k for field in fields})
+
+
+##########################################################################################
+#   Process the swissprot database outputs
+##########################################################################################
+
+# change working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/Swissprot")
+
+# identify files to be processed
+filelist=list()
+for filename in os.listdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/Swissprot"):
+    if filename.endswith(".txt"): 
+         filelist.append(filename)
+
+# extract necesary information
+blast_dict={}
+for i in filelist:
+    file= i
+    f=open(file,'r')
+    all_lines_variable = f.readlines() 
+    numberlist = list()    
+    lookup="Query #"
+    file_name =open(file,'r')
+    for num, line in enumerate(file_name,1):
+        if lookup in line:
+            numberlist.append(num)
+
+    list.reverse(numberlist)       
+          
+    linenum=0
+    originalpos=0
+    while True:
+        linenum+=1
+        f.seek(originalpos)
+        line=f.readline().strip('\n')
+        originalpos=f.tell()
+        if line.startswith('Query #'):
+            OTU=line.split(' ', 3)[2]
+            blast_dict[OTU]={}
+            print(OTU)
+            headcount=0
+            for x in list(range(1,250)):
+                line=f.readline().strip('\n')
+                #read current position
+                currentpos=f.tell()
+                line2=f.readline().strip('\n')
+                #return to previous position to not offset line reads if uneven numbers (e.g. line1 not containing > or skipping query)
+                f.seek(currentpos)
+                if line.startswith('Query #'):
+                    break
+                if line.startswith('>'):
+                    headcount+=1
+                    print(line, line2, headcount)
+                    if 'Hit_'+str(headcount) not in blast_dict[OTU]:
+                        blast_dict[OTU]['Hit_'+str(headcount)]={}
+                    blast_dict[OTU]['Hit_'+str(headcount)]['Description']=line
+                    blast_dict[OTU]['Hit_'+str(headcount)]['Accession']=line2.split(':')[1].split(' ')[1]
+                    for y in list(range(1,20)):
+                        line3=f.readline().strip('\n')
+                        if line3.startswith('Score:'):
+                            blast_dict[OTU]['Hit_'+str(headcount)]['E value']=line3.split(':')[2]
+        if line == '' and linenum >= numberlist[0]:
+            print('end',OTU, line)
+            break
+    f.close()
+    numberlist.clear()
+
+# save as csv
+df = pd.DataFrame.from_dict({(i,j): blast_dict[i][j] 
+                           for i in blast_dict.keys() 
+                           for j in blast_dict[i].keys()},
+                       orient='index')
+df.to_csv('Swissprot.csv', index=True)
+
+
+
+##########################################################################################
+#   Process the pdb database outputs
+##########################################################################################
+
+# change working directory
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/pdb")
+
+# identify files to be processed
+filelist=list()
+for filename in os.listdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/pdb"):
+    if filename.endswith(".txt"): 
+         filelist.append(filename)
+       
+# extract necesary information
+blast_dict={}
+for i in filelist:
+    file= i
+    f=open(file,'r')
+    all_lines_variable = f.readlines() 
+    numberlist = list()    
+    lookup="Query #"
+    file_name =open(file,'r')
+    for num, line in enumerate(file_name,1):
+        if lookup in line:
+            numberlist.append(num)
+
+    list.reverse(numberlist)       
+          
+    linenum=0
+    originalpos=0
+    while True:
+        linenum+=1
+        f.seek(originalpos)
+        line=f.readline().strip('\n')
+        originalpos=f.tell()
+        if line.startswith('Query #'):
+            OTU=line.split(' ', 3)[2]
+            blast_dict[OTU]={}
+            print(OTU)
+            headcount=0
+            for x in list(range(1,250)):
+                line=f.readline().strip('\n')
+                #read current position
+                currentpos=f.tell()
+                line2=f.readline().strip('\n')
+                #return to previous position to not offset line reads if uneven numbers (e.g. line1 not containing > or skipping query)
+                f.seek(currentpos)
+                if line.startswith('Query #'):
+                    break
+                if line.startswith('>'):
+                    headcount+=1
+                    print(line, line2, headcount)
+                    if 'Hit_'+str(headcount) not in blast_dict[OTU]:
+                        blast_dict[OTU]['Hit_'+str(headcount)]={}
+                    blast_dict[OTU]['Hit_'+str(headcount)]['Description']=line
+                    blast_dict[OTU]['Hit_'+str(headcount)]['Accession']=line2.split(':')[1].split(' ')[1]
+                    for y in list(range(1,20)):
+                        line3=f.readline().strip('\n')
+                        if line3.startswith('Score:'):
+                            blast_dict[OTU]['Hit_'+str(headcount)]['E value']=line3.split(':')[2]
+        if line == '' and linenum >= numberlist[0]:
+            print('end',OTU, line)
+            break
+    f.close()
+    numberlist.clear()
+
+
+# save as csv
+df = pd.DataFrame.from_dict({(i,j): blast_dict[i][j] 
+                           for i in blast_dict.keys() 
+                           for j in blast_dict[i].keys()},
+                       orient='index')
+df.to_csv('pdb.csv', index=True)
+
+
+##########################################################################################
+#   Process the dbcan database outputs
+##########################################################################################
+
+# Mnaually compile DBCAN csv outputs into a master CSV
+
+##########################################################################################
+#   merge into a dataset
+##########################################################################################
+
+# load in pfam
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/Pfam")
+pfam = pd.read_csv("pfam.csv")
+pfam.columns = ['Protein ID',' Pfam Description','Pfam E value', 'Pfam Accession']
+
+# load in swissprot
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/Swissprot")
+swiss = pd.read_csv("swissprot.csv")
+swiss.columns = ['Protein ID','Hit','Swiss Description','Swiss Accession', 'Swiss Evalue']
+
+# load in dbcan
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/dbcan")
+dbcan = pd.read_csv("dbcan.csv")
+dbcan.columns = ['X','Protein ID','HMMER','Hotpep','DIAMOND', 'Signalp']
+del dbcan['X']
+
+# load in NCBI
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/NCBI results")
+ncbi = pd.read_csv("ncbi.csv")
+ncbi.columns = ['Protein ID','Hit','Nr Description','Nr Accession', 'Nr Evalue']
+
+# load in pdb
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/pdb")
+pdb = pd.read_csv("pdb.csv")
+pdb.columns = ['Protein ID','Hit','pdb Description','pdb Accession', 'pdb Evalue']
+
+# load in the rank data
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data/Rank")
+rank = pd.read_csv("rank.csv")
+rank.columns = ['Protein ID','Rank']
+
+# change directory to master
+os.chdir("/Users/ollie/OneDrive/Documents/Uni/masters/Data")
+
+# merge all the datasets
+all1 = pd.merge(pd.merge(pdb,ncbi, on=['Protein ID','Hit'], how='outer'),swiss, on =['Protein ID','Hit'], how='outer')
+all2 = pd.merge(pfam,dbcan, on='Protein ID', how='outer')
+df_all = pd.merge(all1,all2, on= 'Protein ID', how='outer')
+
+# add in the rank information
+df_all_and_rank = pd.merge(df_all,rank, on= 'Protein ID', how='left')
+
+# save as CSV
+df_all_and_rank.to_csv('Merged data.csv', index=True)
+
+
+
+
+
+
+
+
+

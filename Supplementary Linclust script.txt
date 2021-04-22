@@ -1,0 +1,50 @@
+#########################################################################################
+#             Run Linclust                                                 
+#########################################################################################
+
+# Using the York Viking supercomputer cluster 
+
+# change workspace
+cd scratch
+
+# make directory
+mkdir linclust
+
+# enter directory
+cd linclust
+
+# load Linclust module, which is in MMSeqs 
+module load bio/MMseqs2/12-113e3-gompi-2020a   
+
+# copy the sequence file into the blast directory
+
+# create a shell file with the following code in, called linclustscript, this will create the sequence database:
+
+#!/bin/bash
+#
+#SBATCH --job-name=BLAST
+#SBATCH --output=basic_job_%j.log
+#SBATCH --mail-user=ojg508@york.ac.uk
+#SBATCH --mail-type=END,FAIL
+#
+#SBATCH --ntasks=1
+#SBATCH --time=48:00:00
+#SBATCH --mem-per-cpu=5gb
+#SBATCH --account=biol-secre-2019
+#SBATCH --cpus-per-task=2
+
+echo My working directory is 'pwd'
+echo Running job on host:
+echo -e '\t''hostname' at 'date'
+
+mmseqs createdb MASTER_ISDE_extracellular_and_outer_membrane_proteins_3534.fna DB
+mkdir tmp
+mmseqs linclust DB clu tmp --cov-mode 0 --cluster-mode 0 --min-seq-id 0.6 --kmer-per-seq 7 -k 15
+mmseqs createtsv DB DB clu kmer_7-k_15-per_60.tsv
+mmseqs createseqfiledb DB clu seq
+mmseqs result2flat DB DB seq kmer_7-k_15-per_60+seq.fasta
+mmseqs align DB DB clu aln -a
+mmseqs convertalis DB DB aln kmer_7-k_15-per_60.m8
+
+# run shell file
+sbatch linclustscript.sh
